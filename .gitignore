@@ -35,6 +35,8 @@ plugins/minigames/__pycache__/
 !plugins/tuner/
 !plugins/tuner/**
 plugins/tuner/__pycache__/
+!plugins/input_setup/
+!plugins/input_setup/**
 node_modules/
 test-results/
 playwright-report/

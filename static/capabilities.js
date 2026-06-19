@@ -79,6 +79,19 @@
     const MAX_DECISIONS = 100;
     const MAX_SNAPSHOT_BYTES = 64 * 1024;
     const DEFAULT_HANDLER_TIMEOUT_MS = 250;
+    // Per-(capability, command) handler-timeout overrides. A few commands front a
+    // user-action / OS-permission prompt (fader reads that await a UI; MIDI/mic
+    // device access) that legitimately runs far longer than the default budget,
+    // so the dispatch/command surface must not fail them at 250 ms while the
+    // operation is still completing through the provider.
+    const COMMAND_TIMEOUTS_MS = {
+        'audio-mix': { 'get-fader-value': 2100, 'set-fader-value': 2100 },
+        'midi-input': { 'discover': 15000, 'open-source': 15000 },
+    };
+    function _commandTimeoutFor(capability, commandName) {
+        const byCap = COMMAND_TIMEOUTS_MS[capability];
+        return byCap ? byCap[commandName] : undefined;
+    }
     const RESERVED_FUTURE_DOMAINS = new Set([
         'ui.navigation',
         'ui.plugin-screens',
@@ -960,7 +973,7 @@
             if (typeof handler !== 'function') continue;
             let decision;
             try {
-                const timeoutMs = Number(commandContext.timeoutMs || DEFAULT_HANDLER_TIMEOUT_MS);
+                const timeoutMs = Number(commandContext.timeoutMs || _commandTimeoutFor(capabilityName, commandName) || DEFAULT_HANDLER_TIMEOUT_MS);
                 const result = await _withTimeout(Promise.resolve(handler(commandContext)), timeoutMs, participant);
                 decision = _normalizeDecision(participant, result);
             } catch (err) {
@@ -1376,7 +1389,7 @@
             target: source.target || source.args?.target || null,
             payload: source.args || source.payload || {},
             claim: source.claim,
-            timeoutMs: source.timeoutMs || (capability === 'audio-mix' && (commandName === 'get-fader-value' || commandName === 'set-fader-value') ? 2100 : undefined),
+            timeoutMs: source.timeoutMs || _commandTimeoutFor(capability, commandName),
         });
         const status = _dispatchStatus(result);
         _emitEvent(capability, 'dispatched', { command: commandName, status, result, source: source.source || source.requester || 'dispatch' });

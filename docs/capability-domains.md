@@ -153,6 +153,18 @@ The legacy chart-coupled surface — `highway.setNoteStateProvider(fn)`, the sin
 
 Diagnostics live under `slopsmith.note_detection_capability.v1` and contain provider ids/labels/kinds, binding summaries (requester, provider, redacted context, target size), availability, and the last bounded outcome (event, binding, provider, MIDI number, hit flag) — never raw audio buffers, sample data, device labels, or song identity.
 
+## MIDI-Input Domain
+
+The MIDI-input slice (spec 012, issues #873/#880) promotes `midi-input` as a **core-owned** provider-coordinator implemented by [static/capabilities/midi-input.js](../static/capabilities/midi-input.js) — the MIDI analog of `audio-input`. It is deliberately separate from `audio-input` (whose source/`open` contract is audio-frame-centric: channel shapes, sample buffers) because MIDI carries discrete messages, not audio; and it is **not** owned by any feature plugin, so the device-access boundary outlives the input-setup wizard (exactly as `audio-input` is `core.audio.session`-owned). Consumers — the `input_setup` onboarding wizard, the `piano`/keys and `drums` plugins, and (as a follow-up, #881) note-detection's Web-MIDI provider — converge here on ONE device-access boundary: one permission prompt, one source list, one redaction boundary, retiring private per-plugin `navigator.requestMIDIAccess()` calls.
+
+Native providers register source summaries with `providerId`, a stable `sourceId`, a derived redaction-safe `logicalSourceKey` (`providerId::sourceId`), `kind: "midi"`, a label, and `availability`. The public command surface is `inspect`, `list-sources`, `discover`, `select-source`, `open-source`, and `close-source`; provider operations are `source.enumerate`, `source.describe`, `source.open`, and `source.close`. `inspect`, `list-sources`, and `select-source` are prompt-free and never request MIDI access. Unlike audio (where `getUserMedia` gates labels and `open-source` is the prompt), Web-MIDI's `requestMIDIAccess()` gates the whole input list, so **`discover` is the permission boundary** and records `denied`/`unavailable` outcomes; `open-source` then attaches a shared listener session and never re-prompts.
+
+Selected input is persisted by `logicalSourceKey` (`slopsmith.midiInput.selectedLogicalSourceKey`) when browser storage is available. Compatible requesters share one open session per source; each later calls `close-source`, and the provider receives `source.close` only after the last requester releases. Live MIDI message delivery (for the "play a note / hit a pad" calibration check) is exposed to in-page consumers through the public `window.slopsmith.midiInput` session handle only — never as raw capability events or diagnostics.
+
+The reserved `midi-control` domain is the planned **sibling** for control mappings (CC/pitchbend/note → action routing) and will consume `midi-input` for device access (spec 013 / #882); this slice carves the device control plane out so `midi-control` can stay mappings-only. `midi-control` stays RESERVED (documentation-only) until a concrete mapping consumer + tests exist, per the future-domain governance.
+
+Diagnostics live under `slopsmith.midi_input.diagnostics.v1` and contain provider ids, source ids/keys/kinds/availability, the selected key, and open-session keys — **device labels are redacted** and no raw MIDI messages are ever included.
+
 ## Capability Roles
 
 Use capability declarations for provider/requester/observer relationships:

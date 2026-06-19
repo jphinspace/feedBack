@@ -153,6 +153,55 @@
     // diagnostic sloppak at 100% — or skip and reach Mastery Rank 1 anyway).
     // The profile POST always lands before the step-3 choice so onboarded=1 is
     // never blocked by the calibration decision. Editing keeps the single form.
+    // Run the input-device setup wizard (the input_setup plugin's
+    // `input-calibration` domain) for the chosen instrument paths — BETWEEN path
+    // selection and the calibration challenge — so the diagnostic runs against a
+    // calibrated input. Capability-idiomatic: dispatch `run` (fire-and-launch)
+    // and await the `calibration-done` event. Degrades gracefully when the
+    // plugin/runtime is absent so onboarding can never be stranded.
+    // Wait (bounded) for the bundled input_setup plugin to finish registering
+    // its input-calibration owner. Plugins load asynchronously, so onboarding
+    // can reach this step before the plugin is ready — without this wait the
+    // mandatory wizard is skipped by a load-order race (it dispatches, gets a
+    // no-owner outcome, and falls through to the calibration challenge). The
+    // public global is set at the end of the plugin's screen.js, after the
+    // owner is registered, so it is a reliable readiness signal.
+    function waitForInputSetup(timeoutMs) {
+        const ready = () => !!(window.slopsmithInputSetup && typeof window.slopsmithInputSetup.launch === 'function');
+        return new Promise((resolve) => {
+            if (ready()) { resolve(true); return; }
+            const t0 = Date.now();
+            const iv = setInterval(() => {
+                if (ready()) { clearInterval(iv); resolve(true); }
+                else if (Date.now() - t0 >= timeoutMs) { clearInterval(iv); resolve(false); }
+            }, 100);
+        });
+    }
+
+    async function runInputSetup(paths) {
+        const instruments = (Array.isArray(paths) ? paths : []).map((p) => String(p).toLowerCase());
+        if (!instruments.length) return;
+        // Don't let a plugin-load race skip the mandatory input-setup step.
+        if (!(await waitForInputSetup(8000))) return;
+        const caps = window.slopsmith && window.slopsmith.capabilities;
+        if (!caps || typeof caps.command !== 'function') {
+            try { await window.slopsmithInputSetup.launch(instruments); } catch (e) { /* proceed */ }
+            return;
+        }
+        await new Promise((resolve) => {
+            let settled = false;
+            let unsub = null;
+            const done = () => { if (settled) return; settled = true; try { unsub && unsub(); } catch (e) { /* noop */ } resolve(); };
+            try { unsub = typeof caps.subscribe === 'function' ? caps.subscribe('input-calibration:calibration-done', done) : null; } catch (e) { unsub = null; }
+            // `run` is fire-and-launch; completion arrives via the event above.
+            // A non-handled outcome (no owner / plugin absent / error) means
+            // nothing was launched, so proceed immediately.
+            caps.command('input-calibration', 'run', { requester: 'onboarding', payload: { instruments } })
+                .then((r) => { if (!r || r.outcome !== 'handled') done(); })
+                .catch(() => done());
+        });
+    }
+
     function show(profile, opts) {
         opts = opts || {};
         const editing = !!opts.editing;
@@ -160,7 +209,7 @@
 
         const stepDots = editing ? '' :
             '<div class="flex justify-center gap-1.5 mt-3" id="v3-ob-dots">' +
-            [1, 2, 3].map((n) => '<span data-dot="' + n + '" class="w-2 h-2 rounded-full bg-fb-border"></span>').join('') +
+            [1, 2, 3, 4].map((n) => '<span data-dot="' + n + '" class="w-2 h-2 rounded-full bg-fb-border"></span>').join('') +
             '</div>';
 
         const overlay = document.createElement('div');
@@ -184,13 +233,22 @@
             '<button type="button" id="v3-ob-upload-btn" class="text-sm text-fb-primary hover:text-fb-primaryHi">Upload your own</button>' +
             '<input type="file" id="v3-ob-upload" accept="image/*" class="hidden">' +
             '<span id="v3-ob-preview"></span></div></div></div>' +
-            // Step 2 — instrument paths (first-run only; tiles filled on entry).
+            // Step 2 — song directory (where the user's songs live).
             '<div id="v3-ob-step2" class="hidden">' +
+            '<label class="block text-xs uppercase tracking-wider text-fb-textDim mb-2">Song directory</label>' +
+            '<p class="text-sm text-fb-textDim mb-3">Choose the folder where your songs are stored. We’ll scan it to build your library. You can change this later in Settings.</p>' +
+            '<div class="flex gap-2">' +
+            '<input id="v3-ob-songdir" type="text" placeholder="Path to your songs folder" ' +
+            'class="flex-1 bg-gray-800/50 border border-gray-700 rounded-md px-3 py-2 text-sm text-fb-text outline-none focus:border-fb-primary focus:ring-1 focus:ring-fb-primary">' +
+            '<button type="button" id="v3-ob-songdir-browse" class="hidden px-3 py-2 rounded-md text-sm bg-gray-800/50 border border-gray-700 text-fb-text hover:border-fb-primary whitespace-nowrap">Browse…</button>' +
+            '</div></div>' +
+            // Step 3 — instrument paths (first-run only; tiles filled on entry).
+            '<div id="v3-ob-step3" class="hidden">' +
             '<label class="block text-xs uppercase tracking-wider text-fb-textDim mb-2">Pick your instrument path(s)</label>' +
             '<p class="text-sm text-fb-textDim mb-3">Each path levels up by completing challenges — together they make up your Mastery Rank. You can add more later.</p>' +
             '<div id="v3-ob-paths" class="grid grid-cols-3 gap-2"></div></div>' +
-            // Step 3 — calibration offer (first-run only).
-            '<div id="v3-ob-step3" class="hidden">' +
+            // Step 4 — calibration offer (first-run only).
+            '<div id="v3-ob-step4" class="hidden">' +
             '<label class="block text-xs uppercase tracking-wider text-fb-textDim mb-2">Calibration challenge</label>' +
             '<p class="text-sm text-fb-textDim">Prove your setup: play the <span class="text-fb-text">fee[dB]ack Diagnostic</span> with note detection and finish at <span class="text-fb-text font-semibold">100% accuracy</span> to reach <span class="text-fb-text font-semibold">Mastery Rank 1</span>.</p>' +
             '<p class="text-sm text-fb-textDim mt-2">Not ready? Skip it and you’ll start at Rank 1 anyway — you can still play it later from the Progress screen.</p></div>' +
@@ -211,9 +269,12 @@
         const skipBtn = overlay.querySelector('#v3-ob-skip');
         let selected = null;      // { type:'default', value } | { type:'upload', value:url }
         let step = 1;             // first-run wizard step (editing stays on 1)
-        let selectedPaths = [];   // step-2 picks
+        let songDir = '';         // step-2 song directory pick
+        let selectedPaths = [];   // step-3 picks
         let pathsAvailable = false;      // any tiles rendered? (false → don't strand the user)
-        let diagnosticFilename = null;   // from /api/progression (step-3 "Play it now")
+        let diagnosticFilename = null;   // from /api/progression (step-4 "Play it now")
+        const songDirEl = overlay.querySelector('#v3-ob-songdir');
+        const songDirBrowse = overlay.querySelector('#v3-ob-songdir-browse');
 
         if (editing && profile) {
             nameEl.value = profile.display_name || '';
@@ -229,6 +290,10 @@
                 const haveAvatar = !!selected || (editing && profile && !!profile.avatar_url);
                 submit.disabled = !(nameEl.value.trim().length >= 1 && haveAvatar);
             } else if (step === 2) {
+                // Song directory — require a non-empty path to proceed; "Skip
+                // for now" is available for users who'll set it later.
+                submit.disabled = !songDir.trim();
+            } else if (step === 3) {
                 // ≥1 path required — unless none could be offered (offline /
                 // empty content), where blocking would strand onboarding.
                 submit.disabled = pathsAvailable && selectedPaths.length < 1;
@@ -240,7 +305,7 @@
         function setStep(n) {
             step = n;
             errEl.classList.add('hidden');
-            for (let i = 1; i <= 3; i++) {
+            for (let i = 1; i <= 4; i++) {
                 overlay.querySelector('#v3-ob-step' + i).classList.toggle('hidden', i !== n);
             }
             overlay.querySelectorAll('#v3-ob-dots [data-dot]').forEach((d) => {
@@ -250,11 +315,14 @@
             const subtitle = overlay.querySelector('#v3-ob-subtitle');
             if (subtitle) {
                 subtitle.textContent = n === 1 ? 'Set up your player profile'
-                    : n === 2 ? 'Choose your instrument paths'
+                    : n === 2 ? 'Point us at your songs'
+                    : n === 3 ? 'Choose your instrument paths'
                     : 'One last thing — calibrate your setup';
             }
-            submit.textContent = n === 3 ? 'Play it now' : 'Next';
-            skipBtn.classList.toggle('hidden', n !== 3);
+            submit.textContent = n === 4 ? 'Play it now' : 'Next';
+            // Skip is offered on the song-directory step (configure later) and
+            // the calibration challenge.
+            skipBtn.classList.toggle('hidden', !(n === 2 || n === 4));
             refreshSubmit();
         }
 
@@ -347,6 +415,43 @@
 
         if (editing) overlay.querySelector('#v3-ob-cancel')?.addEventListener('click', () => overlay.remove());
 
+        // ── Song directory (step 2) ──────────────────────────────────────────
+        if (songDirEl) {
+            songDirEl.addEventListener('input', () => { songDir = songDirEl.value.trim(); refreshSubmit(); });
+        }
+        // Native folder picker on desktop; web users type/paste the path.
+        const _desktop = window.slopsmithDesktop;
+        if (songDirBrowse && _desktop && typeof _desktop.pickDirectory === 'function') {
+            songDirBrowse.classList.remove('hidden');
+            songDirBrowse.addEventListener('click', async () => {
+                try {
+                    const picked = await _desktop.pickDirectory();
+                    if (picked) { songDirEl.value = picked; songDir = picked; refreshSubmit(); }
+                } catch (e) { /* user cancelled / unavailable */ }
+            });
+        }
+        // Save the song directory to settings + kick a library scan so the
+        // user's songs appear. Throws (with a message) on an invalid folder.
+        async function saveSongDir() {
+            const dir = ((songDirEl && songDirEl.value) || '').trim();
+            if (!dir) return;   // skipped — leave unconfigured (settable later)
+            const res = await fetch('/api/settings', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dlc_dir: dir }),
+            });
+            // /api/settings reports an invalid folder as a 200 with an `error`
+            // field (a bare dict return, not a non-2xx status), so a res.ok-only
+            // check would treat the failure as success and advance without saving.
+            // Inspect the body too.
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* non-JSON body */ }
+            if (!res.ok || (data && data.error)) {
+                throw new Error((data && data.error) || 'That folder couldn’t be set — check the path and try again.');
+            }
+            // Non-fatal: scan kicks off the library build in the background.
+            try { await fetch('/api/rescan', { method: 'POST' }); } catch (e) { /* best-effort */ }
+        }
+
         async function postProfile() {
             const res = await fetch('/api/profile', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -380,12 +485,23 @@
             }
             if (step === 1) {
                 setStep(2);
-                loadPathTiles();
+                setTimeout(() => { try { songDirEl && songDirEl.focus(); } catch (e) { /* noop */ } }, 50);
                 return;
             }
             if (step === 2) {
+                // Save the song directory + kick a library scan, then continue
+                // to instrument paths. "Skip for now" leaves it unconfigured.
+                submit.disabled = true;
+                try {
+                    await saveSongDir();
+                    setStep(3);
+                    loadPathTiles();
+                } catch (e) { showErr(e.message || 'Could not set the song directory.'); refreshSubmit(); }
+                return;
+            }
+            if (step === 3) {
                 // Create the profile (onboarded=1) BEFORE the calibration choice
-                // so closing the overlay at step 3 can never lose the profile.
+                // so closing the overlay at the challenge can never lose the profile.
                 submit.disabled = true;
                 try {
                     _profile = await postProfile();
@@ -403,11 +519,14 @@
                             throw new Error(msg);
                         }
                     }
-                    setStep(3);
+                    // New step: input-device selection + calibration, between
+                    // path selection and the note-detect calibration challenge.
+                    await runInputSetup(selectedPaths);
+                    setStep(4);
                 } catch (e) { showErr(e.message || 'Could not save profile.'); refreshSubmit(); }
                 return;
             }
-            // Step 3 — "Play it now": leave calibration pending (it completes
+            // Step 4 — "Play it now": leave calibration pending (it completes
             // through the normal scored-stats path) and launch the diagnostic.
             const target = diagnosticFilename;
             await finish();
@@ -415,7 +534,14 @@
         });
 
         skipBtn.addEventListener('click', async () => {
-            // Step 3 — skip: Mastery Rank 1 immediately, calibration stays
+            // Step 2 — skip the song directory (the user can set it later in
+            // Settings). Proceed straight to instrument paths.
+            if (step === 2) {
+                setStep(3);
+                loadPathTiles();
+                return;
+            }
+            // Step 4 — skip: Mastery Rank 1 immediately, calibration stays
             // replayable from the Progress screen.
             skipBtn.disabled = true;
             try {

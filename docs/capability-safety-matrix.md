@@ -21,6 +21,8 @@ Core domains also have a review scope. **Active contract** domains are wired to 
 
 | note-detection | provider-coordinator | sensitive | inspect, register-provider, unregister-provider, open-binding, close-binding, set-target, clear-target | pitch.estimate, verify.target | Detection-binding control plane (spec 009): providers (midi/engine/js) serve primitives; each requester binds its own redacted tuning context; consumers own judgment, hit/miss flow as observability events. Legacy `highway.setNoteStateProvider` is an accounted shim. Diagnostics carry provider/binding summaries and bounded outcomes — no raw audio, sample data, device labels, or song identity. |
 
+| midi-input | provider-coordinator | sensitive | inspect, list-sources, discover, select-source, open-source, close-source | source.enumerate, source.describe, source.open, source.close | Core-owned MIDI device control plane (spec 012), the MIDI analog of `audio-input`. Inspect/list/select are prompt-free; `discover` is the Web-MIDI permission boundary (`requestMIDIAccess()` gates the whole input list) and records denied/unavailable outcomes; `open-source` attaches a shared listener session and never re-prompts. Selection persists by redaction-safe `logicalSourceKey`. Diagnostics redact device labels and never include raw MIDI messages or live handles. |
+
 Privileged commands are roadmap-only until they have: a visible user confirmation path, diagnostics redaction rules, failure recovery, and tests that prove disabled or incompatible participants cannot execute handlers.
 
 ## Expected Future Domains
@@ -38,7 +40,7 @@ These domains are expected future capability contracts, not current runtime grap
 | ui.player-overlays | exclusive-owner | safe | register-contribution, mount, unmount, set-visible, reorder-by-policy, inspect | Needs overlay placement rules that coexist with legacy highway overlays. |
 | plugins | exclusive-owner | privileged | enable, disable, install-missing, update, inspect | Needs explicit user confirmation for writes/install/update. |
 | jobs | multi-provider | privileged | register, inspect, cancel | Needs scheduling limits, cancellation semantics, and user-visible failures. |
-| midi-control | multi-provider | sensitive | register, inspect | Needs device consent and redacted diagnostics. |
+| midi-control | multi-provider | sensitive | list-mappings, get-mapping, set-mapping, delete-mapping, activate-mapping, inspect | Mappings ONLY — CC/pitchbend/note → semantic action routing (spec 013). Device discovery/selection/open is NOT this domain's job: it consumes the delivered `midi-input` domain for device access. Needs a concrete mapping consumer (the MIDI control plugin / drums learn-mode) + redacted diagnostics (no raw MIDI streams) before promotion. |
 | tempo-clock | multi-provider | safe | register, inspect | Needs a concrete provider and consumer workflow. |
 
 Planned domains should also stay out of the runtime graph until Slopsmith ships the corresponding user-facing workflows.

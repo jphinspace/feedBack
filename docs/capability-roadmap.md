@@ -108,7 +108,7 @@ These domains are planned but should stay out of the runtime graph until a host 
 | `ui.player-overlays` | exclusive-owner | safe | Overlay contributions layered over player or highway surfaces. | Overlay placement and z-order rules that coexist with legacy overlays. |
 | `plugins` | exclusive-owner | privileged | Plugin enable/disable/install/update workflows. | Visible user confirmation, rollback, and disabled-handler enforcement. |
 | `jobs` | multi-provider | privileged | Long-running jobs, cancellation, status, failures. | Scheduling limits, cancellation semantics, and user-visible failures. |
-| `midi-control` | multi-provider | sensitive | MIDI device providers and control mappings. | Device consent and redacted diagnostics. |
+| `midi-control` | multi-provider | sensitive | MIDI control mappings only (CC/pitchbend/note → action routing), consuming `midi-input` for device access. Device discovery/selection/open is split out to the delivered `midi-input` domain (spec 012). | A concrete mapping/routing workflow on top of the `midi-input` device plane (#882). |
 | `audio-input` | multi-provider | sensitive | Audio input device providers, source selection, open/close lifecycle, shared sessions, and redacted failure diagnostics. | Promoted by the audio graph/session slice and implemented by the audio-input control-plane slice. |
 | `tempo-clock` | multi-provider | safe | Tempo/clock provider registration and consumers. | A concrete tempo source and consumer workflow. |
 
