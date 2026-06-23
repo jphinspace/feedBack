@@ -806,6 +806,14 @@
                     </select>
                     <button onclick="deleteSelectedLoop()" id="btn-loop-delete" class="v3-pop-btn hidden" title="Delete selected loop">✕</button>
                 </div>
+                <!-- Editor ⇄ 3D Highway round-trip (mirrors the v2 loop cluster). -->
+                <div class="v3-pop-row">
+                    <span class="v3-pop-label">Editor</span>
+                    <span class="flex items-center gap-1 flex-wrap">
+                        <button onclick="editRegionInEditor()" id="btn-edit-region" class="v3-pop-btn hidden" title="Edit this region in the Song Editor">✎ Edit region</button>
+                        <button onclick="returnToEditorFromHighway()" id="btn-return-editor" class="v3-pop-btn hidden" title="Return to the editor where you left off">↩ Editor</button>
+                    </span>
+                </div>
                 <button onclick="showScreen('home')" class="v3-pop-close" title="Close player">✕ Close player</button>
             </div>
         </div>

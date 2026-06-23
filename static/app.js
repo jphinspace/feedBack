@@ -5759,6 +5759,27 @@ window.feedBack.on('song:ready', () => {
     Promise.resolve(togglePlay()).catch((err) => console.warn('[app] autoplay failed:', err));
 });
 
+// Editor → Highway handoff (Editor ⇄ 3D Highway region round-trip). The
+// editor's "Loop in 3D" button stashes a pending loop + return context, then
+// calls playSong(). Once the chart is ready (playSong's own clearLoop() has
+// already run, so the loop won't be wiped), arm the loop over the selected
+// region and start playback so the user lands inside the loop directly.
+window.feedBack.on('song:ready', () => {
+    _updateEditRegionBtn();
+    const pend = window._pendingHighwayLoop;
+    if (!pend) return;
+    // Only apply to the song it was set for — a cancelled/failed handoff
+    // must not arm a stale loop on an unrelated song loaded later.
+    const want = pend.returnCtx && pend.returnCtx.filename;
+    if (want && currentFilename && want !== currentFilename) return;
+    window._pendingHighwayLoop = null;
+    window._highwayReturnCtx = pend.returnCtx || null;
+    Promise.resolve(setLoop(pend.a, pend.b))
+        .then((ok) => { if (ok && !isPlaying) return togglePlay(); })
+        .catch((err) => console.warn('[app] loop-in-3d apply failed:', err));
+    _updateEditRegionBtn();
+});
+
 // Auto-exit: when the song ends, return to the launching menu. A scoring
 // plugin that shows an end-of-song results screen calls holdAutoExit() to
 // defer this; the user closing that screen (its Close button calls
@@ -7219,7 +7240,96 @@ function updateLoopUI() {
     } else {
         label.textContent = '';
     }
+    _updateEditRegionBtn();
 }
+
+// ── Highway → Editor handoff ("Edit region") ────────────────────────────
+// The flip side of the editor's "Loop in 3D" button: jump from the player
+// to the Song Editor scrolled to the region you're looking at, edit, then
+// (via the editor's Loop-in-3D) come straight back. Reuses the existing
+// A/B loop as the region, falling back to the section under the playhead.
+
+// Resolve the region to edit: the active A/B loop if set, else the section
+// containing the playhead, else a short window around it. All in seconds.
+function _resolveEditRegion() {
+    if (loopA !== null && loopB !== null) return { a: loopA, b: loopB };
+    const t = _audioTime();
+    try {
+        const secs = (highway && typeof highway.getSections === 'function')
+            ? highway.getSections() : [];
+        if (Array.isArray(secs) && secs.length) {
+            let start = null, end = null;
+            for (let i = 0; i < secs.length; i++) {
+                const st = _sectionPracticeStartTime(secs[i]);
+                if (!Number.isFinite(st)) continue;
+                if (st <= t + 1e-6) {
+                    start = st;
+                    const nx = secs[i + 1] ? _sectionPracticeStartTime(secs[i + 1]) : NaN;
+                    end = Number.isFinite(nx) ? nx : null;
+                } else if (start !== null) {
+                    break;
+                }
+            }
+            if (start !== null) return { a: start, b: (end !== null && end > start) ? end : start + 8 };
+        }
+    } catch (_) { /* fall through to the window default */ }
+    return { a: Math.max(0, t - 4), b: t + 4 };
+}
+
+// Enable "Edit region" whenever the editor plugin is present and a song is
+// loaded; show "↩ Editor" only while a return context is pending.
+function _updateEditRegionBtn() {
+    const hasEditor = typeof window.editSong === 'function';
+    const editBtn = document.getElementById('btn-edit-region');
+    if (editBtn) {
+        editBtn.classList.toggle('hidden', !hasEditor);
+        editBtn.disabled = !currentFilename;
+    }
+    const retBtn = document.getElementById('btn-return-editor');
+    if (retBtn) {
+        retBtn.classList.toggle('hidden', !(hasEditor && window._highwayReturnCtx));
+    }
+}
+
+// Open the Song Editor at the current region.
+function editRegionInEditor() {
+    if (typeof window.editSong !== 'function' || !currentFilename) return;
+    const region = _resolveEditRegion();
+    let arrangement = 0;
+    try {
+        const si = highway && typeof highway.getSongInfo === 'function' ? highway.getSongInfo() : null;
+        if (si && typeof si.arrangement_index === 'number' && si.arrangement_index >= 0) {
+            arrangement = si.arrangement_index;
+        }
+    } catch (_) { /* default to 0 */ }
+    window._editorPendingView = {
+        filename: currentFilename,
+        arrangement,
+        barSel: { startTime: region.a, endTime: region.b },
+        returnToHighway: true,
+    };
+    window.editSong(currentFilename);
+}
+window.editRegionInEditor = editRegionInEditor;
+
+// Return from the editor to the highway loop we came from (set by the
+// song:ready applier above). The editor consumes _editorPendingView to
+// restore the exact edit position; here we just navigate back.
+function returnToEditorFromHighway() {
+    const ctx = window._highwayReturnCtx;
+    if (!ctx || typeof window.editSong !== 'function') return;
+    window._highwayReturnCtx = null;
+    window._editorPendingView = {
+        filename: ctx.filename,
+        arrangement: ctx.arrangement,
+        scrollX: ctx.scrollX,
+        zoom: ctx.zoom,
+        cursorTime: ctx.cursorTime,
+        barSel: ctx.barSel,
+    };
+    window.editSong(ctx.filename);
+}
+window.returnToEditorFromHighway = returnToEditorFromHighway;
 
 // ── Section Practice Bar ────────────────────────────────────────────────
 // One-click looping over song section markers (highway.getSections —

@@ -578,6 +578,13 @@
                 <option value="">Saved Loops</option>
             </select>
             <button onclick="deleteSelectedLoop()" id="btn-loop-delete" class="px-2 py-1.5 bg-dark-600 hover:bg-red-900/50 rounded-lg text-xs text-gray-500 hover:text-red-400 transition hidden" title="Delete selected loop">✕</button>
+            <!-- Editor ⇄ 3D Highway round-trip. "Edit region" opens the Song Editor
+                 scrolled to the active loop (or the section at the playhead).
+                 "↩ Editor" returns to the editing position you came from; it only
+                 appears after a Loop-in-3D handoff. Both are hidden when the editor
+                 plugin isn't loaded (state managed by _updateEditRegionBtn). -->
+            <button onclick="editRegionInEditor()" id="btn-edit-region" class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300 transition hidden" title="Edit this region in the Song Editor">✎ Edit region</button>
+            <button onclick="returnToEditorFromHighway()" id="btn-return-editor" class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300 transition hidden" title="Return to the editor where you left off">↩ Editor</button>
             <button onclick="showScreen('home')" class="ml-auto px-3 py-1.5 bg-dark-600 hover:bg-red-900/50 rounded-lg text-xs text-gray-400 hover:text-red-400 transition">✕ Close</button>
         </div>
         </div>
