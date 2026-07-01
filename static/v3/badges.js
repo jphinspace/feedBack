@@ -60,6 +60,52 @@
         return typeof settings.tuning === 'string' ? settings.tuning : 'Custom';
     }
 
+    // The SELECTED instrument's live working tuning (host `workingTuning` capability).
+    // Feature-detected: returns null when the host doesn't expose it, so the card
+    // quietly falls back to the profile tuning. `offsets` are named via the shared
+    // displayTuningName resolver; "home" = still in the profile/default tuning.
+    function workingTuningInfo() {
+        var wt = window.feedBack && window.feedBack.workingTuning;
+        var st = wt && typeof wt.get === 'function' ? wt.get() : null;
+        if (!st) return null;
+        var offsets = Array.isArray(st.offsets) ? st.offsets : null;
+        var nameFor = window.displayTuningName
+            || (window.feedBack && window.feedBack.displayTuningName);
+        // Resolve BOTH the home tuning and the working tuning through the SAME namer so
+        // "home?" is a like-for-like comparison — comparing a raw settings string ('Custom'
+        // / 'E Standard') against a from-offsets name would mislabel a real home tuning.
+        var homeLabel = (typeof nameFor === 'function')
+            ? (nameFor(typeof settings.tuning === 'string' ? settings.tuning : null,
+                Array.isArray(settings.tuning) ? settings.tuning : null) || tuningLabel())
+            : tuningLabel();
+        var label = (offsets && typeof nameFor === 'function') ? nameFor(null, offsets) : homeLabel;
+        return {
+            label: label,
+            short: label.replace(/ Standard\b/, ' Std').replace(/Custom Tuning/, 'Custom'),
+            // Home = no explicit working offsets, OR the working tuning names the same as
+            // the profile's home tuning (both via `nameFor`, so the compare is consistent).
+            isHome: !offsets || label === homeLabel,
+            provenance: st.provenance === 'verified' ? 'verified' : 'assumed',
+        };
+    }
+
+    // Honesty glyph: a hollow diamond for an assumed tuning, a filled one for a
+    // per-string mic-verified tuning (see the workingTuning provenance flag).
+    function provenanceGlyph(p) {
+        return p === 'verified'
+            ? '<span title="Verified by a per-string mic check" class="text-emerald-400">&#9670;</span>'
+            : '<span title="Assumed — not mic-verified" class="text-fb-textDim">&#9671;</span>';
+    }
+
+    // Tell the host which instrument is now selected, so workingTuning.get()
+    // surfaces THIS instrument's own remembered tuning. No-op without the capability.
+    function setWorkingInstrument(inst, sc) {
+        var wt = window.feedBack && window.feedBack.workingTuning;
+        if (wt && typeof wt.setCurrentInstrument === 'function') {
+            try { wt.setCurrentInstrument(inst, sc); } catch (_) { /* noop */ }
+        }
+    }
+
     let settings = { instrument: 'guitar', string_count: 6, tuning: 'Standard', reference_pitch: 440 };
 
     async function loadTunings() {
@@ -129,13 +175,14 @@
                 accepted = !(body && body.error);
             }
         } catch (e) { /* non-fatal — leave settings unchanged */ }
-        if (!accepted) return;
+        if (!accepted) return false;
         Object.assign(settings, patch);
         if (sm && sm.emit) sm.emit('instrument:changed', {
             instrument: settings.instrument, stringCount: settings.string_count, tuning: settings.tuning,
         });
         pushToTuner();
         renderTuner(); // reflect new tuning on the tuner card
+        return true;
     }
 
     // Drive the tuner plugin's instrument + tuning from the selection.
@@ -343,14 +390,29 @@
     function renderInstrument() {
         const host = document.getElementById('v3-badge-instrument');
         if (!host) return;
+        const wt = workingTuningInfo();
         host.innerHTML =
             '<div id="v3-instrument-wrap" class="relative">' +
-            '<button type="button" data-inst-toggle title="Instrument: ' + esc(settings.string_count + '-str ' + tuningLabel()) + '" ' +
-            'class="bg-fb-card border border-fb-border/50 rounded-2xl h-[92px] w-16 flex flex-col items-center justify-center gap-2 hover:ring-1 hover:ring-fb-primary/40 transition">' +
+            '<button type="button" data-inst-toggle title="Instrument: ' + esc(settings.string_count + '-str ' + (wt ? wt.label : tuningLabel())) + '" ' +
+            'class="bg-fb-card border border-fb-border/50 rounded-2xl h-[92px] w-16 flex flex-col items-center justify-center gap-1.5 hover:ring-1 hover:ring-fb-primary/40 transition">' +
             guitarIcon +
+            // Live working-tuning label: dim while you're still in your home tuning,
+            // amber once you've retuned. Omitted if the host doesn't expose
+            // workingTuning (feature-detect → the card looks exactly as before).
+            (wt ? '<span class="text-[9px] leading-none font-semibold max-w-full truncate px-0.5 ' +
+                (wt.isHome ? 'text-fb-textDim' : 'text-amber-400') + '">' + esc(wt.short) + '</span>' : '') +
             '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>' +
             '</button>' +
             '<div data-inst-menu class="hidden absolute right-0 mt-2 w-60 bg-fb-card border border-fb-border/50 rounded-xl shadow-xl p-3 z-50 space-y-3">' +
+            // "Now in" banner + one-tap back-to-default — shown only once you've
+            // retuned off your home tuning (workingTuning present and not home).
+            ((wt && !wt.isHome)
+                ? '<div class="flex items-center justify-between gap-2 pb-1 border-b border-fb-border/40">' +
+                  '<div class="min-w-0"><div class="text-[0.625rem] uppercase tracking-wider text-fb-textDim">Now in</div>' +
+                  '<div class="text-xs font-semibold text-amber-400 truncate flex items-center gap-1">' + esc(wt.label) + ' ' + provenanceGlyph(wt.provenance) + '</div></div>' +
+                  '<button type="button" data-inst-reset title="Reset this instrument to its home tuning" class="shrink-0 text-[11px] text-fb-textDim hover:text-fb-text border border-fb-border/40 hover:border-fb-border/70 rounded-md px-2 py-1 transition-colors">Back to default</button>' +
+                  '</div>'
+                : '') +
             instRow('Instrument', ['guitar', 'bass'].map((v) =>
                 pill('inst', v, v[0].toUpperCase() + v.slice(1), settings.instrument === v)).join('')) +
             instRow('Strings', STRING_COUNTS[settings.instrument].map((v) =>
@@ -388,20 +450,32 @@
             // unsupported instrument+tuning combo.
             const newSc = counts.includes(settings.string_count) ? settings.string_count : counts[0];
             const tunings = _tuningsForInstrument(v, newSc);
-            await saveSettings({
+            const ok = await saveSettings({
                 instrument: v,
                 string_count: newSc,
                 tuning: tunings.includes(settings.tuning) ? settings.tuning : (tunings[0] || settings.tuning),
             });
+            // Only move the working-tuning context once the switch was actually persisted —
+            // otherwise the selector stays on the old instrument while the card shows the
+            // new one's tuning (settings and workingTuning desync on a rejected save).
+            if (ok) setWorkingInstrument(v, newSc);   // surface THIS instrument's own working tuning
             renderInstrument(); keepOpen();
         }));
         menu.querySelectorAll('[data-pill="strings"]').forEach((b) => b.addEventListener('click', async () => {
-            await saveSettings({ string_count: Number(b.getAttribute('data-val')) }); renderInstrument(); keepOpen();
+            await saveSettings({ string_count: Number(b.getAttribute('data-val')) });
+            setWorkingInstrument(settings.instrument, settings.string_count);
+            renderInstrument(); keepOpen();
         }));
         menu.querySelector('[data-inst-tuning]').addEventListener('change', (e) => saveSettings({ tuning: e.target.value }));
         const ref = menu.querySelector('[data-inst-ref]');
         ref.addEventListener('input', (e) => { menu.querySelector('[data-ref-val]').textContent = e.target.value + ' Hz'; });
         ref.addEventListener('change', (e) => saveSettings({ reference_pitch: Number(e.target.value) }));
+        const resetBtn = menu.querySelector('[data-inst-reset]');
+        if (resetBtn) resetBtn.addEventListener('click', () => {
+            const wtCap = window.feedBack && window.feedBack.workingTuning;
+            if (wtCap && typeof wtCap.resetToDefault === 'function') wtCap.resetToDefault();
+            renderInstrument(); keepOpen();
+        });
     }
     function instRow(label, inner) {
         return '<div><div class="text-[10px] uppercase tracking-wider text-fb-textDim mb-1">' + label + '</div><div class="flex flex-wrap gap-1">' + inner + '</div></div>';
@@ -415,6 +489,11 @@
 
     async function boot() {
         await Promise.all([loadTunings(), loadSettings()]);
+        // NB: we deliberately do NOT call setWorkingInstrument() here. The host seeds its
+        // current instrument from the same /api/settings on boot and emits
+        // working-tuning-changed on hydration (which re-renders this card), so the card
+        // aligns without us pre-touching the state — calling setCurrentInstrument() early
+        // would set the capability's `_touched` flag and suppress that seed.
         renderInstrument();
         renderTuner();
         pushToTuner(); // sync the tuner to the persisted selection on load
@@ -434,6 +513,9 @@
             sm.on('screen:changed', (e) => {
                 if (!e || !e.detail || e.detail.id !== 'player') { _coverageCueToken++; _lastCoverageReport = null; _applyCoverageCue(null); }
             });
+            // The tuner (or a reset) changed the live working tuning → re-render the
+            // card label + the "Now in" banner. No-op if the host lacks the capability.
+            sm.on('working-tuning-changed', () => renderInstrument());
         }
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
