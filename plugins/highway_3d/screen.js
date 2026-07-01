@@ -1866,6 +1866,7 @@
         title.textContent = 'Wide-pane framing';
         title.style.cssText = 'font-weight:700;color:#e8c040;';
         const close = document.createElement('button');
+        close.type = 'button';                 // never submit if nested in a <form>
         close.textContent = '×';
         close.title = 'Close (Shift+A)';
         close.setAttribute('aria-label', 'Close');
@@ -1879,6 +1880,7 @@
         const tgtLab = document.createElement('div');
         tgtLab.textContent = 'Target'; tgtLab.style.cssText = 'color:#9fb0c8;margin-bottom:2px;';
         _aspectTargetSel = document.createElement('select');
+        _aspectTargetSel.setAttribute('aria-label', 'Target pane');
         _aspectTargetSel.style.cssText = 'width:100%;background:rgba(30,44,66,0.9);color:#cfe0f5;border:1px solid rgba(120,150,200,0.4);border-radius:4px;padding:3px;';
         _aspectTargetSel.addEventListener('change', () => {
             _aspectEditTarget = _aspectTargetSel.value; _syncAspectPanel();
@@ -1961,6 +1963,7 @@
         btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
         const mkBtn = (txt, fn) => {
             const b = document.createElement('button');
+            b.type = 'button';                 // never submit if nested in a <form>
             b.textContent = txt;
             b.style.cssText = 'flex:1;padding:4px 0;border-radius:5px;border:1px solid rgba(120,150,200,0.4);background:rgba(40,60,90,0.6);color:#cfe0f5;cursor:pointer;font:11px system-ui;';
             b.addEventListener('click', fn);
