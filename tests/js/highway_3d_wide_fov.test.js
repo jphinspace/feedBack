@@ -120,11 +120,11 @@ test('applySize caches the pane aspect for camUpdate', () => {
     );
 });
 
-test('camUpdate reads the live tune bridge and respects splitOnly', () => {
+test('camUpdate resolves a per-pane tune and respects splitOnly', () => {
     assert.match(
         src,
-        /const\s+_aspTune\s*=\s*_aspectTune\(\)\s*;[\s\S]*?_aspTune\.splitOnly\s*&&\s*!_ssActive\(\)/,
-        'camUpdate must read the bridge via _aspectTune() and gate splitOnly on _ssActive()',
+        /const\s+_aspTune\s*=\s*_resolveTuneFor\(\s*_paneKey\s*\)\s*;[\s\S]*?_aspTune\.splitOnly\s*&&\s*!_ssActive\(\)/,
+        'camUpdate must resolve the tune per pane via _resolveTuneFor(_paneKey) and gate splitOnly',
     );
 });
 
@@ -136,11 +136,50 @@ test('the tune bridge seeds from localStorage (persisted sessions apply on load)
     );
 });
 
-test('a floating tuner panel is built and toggled with the A/B state', () => {
+test('a floating tuner panel is built and can be shown/hidden', () => {
     assert.match(src, /function\s+_ensureAspectPanel\s*\(\)/,
         '_ensureAspectPanel() must exist to build the live panel');
     assert.match(src, /function\s+_setAspectPanelVisible\s*\(/,
-        '_setAspectPanelVisible() must show/hide the panel with the feature');
+        '_setAspectPanelVisible() must show/hide the panel');
+});
+
+// ── Per-pane targeting ────────────────────────────────────────────────────────
+
+test('the tune resolves per pane with a sparse override map', () => {
+    // _resolveTuneFor overlays a pane's __panels[key] overrides onto the base so
+    // one split pane can be framed independently of the others.
+    assert.match(
+        src,
+        /function\s+_resolveTuneFor\s*\(\s*paneKey\s*\)[\s\S]*?base\.__panels\s*&&\s*base\.__panels\[\s*paneKey\s*\]/,
+        '_resolveTuneFor must overlay per-pane overrides from base.__panels',
+    );
+});
+
+test('panel writes route to the selected target (base or a pane override)', () => {
+    // _aspectWriteVal writes to the base when target is empty, else into the
+    // pane override sub-object; camUpdate consumes it via _resolveTuneFor.
+    assert.match(
+        src,
+        /function\s+_aspectWriteVal\s*\([\s\S]*?if\s*\(\s*!_aspectEditTarget\s*\)[\s\S]*?base\.__panels\b[\s\S]*?\[\s*_aspectEditTarget\s*\]/,
+        '_aspectWriteVal must target base for "all" and __panels[target] for a pane',
+    );
+});
+
+test('a Target select and pane registry drive the per-pane picker', () => {
+    assert.match(src, /_aspectTargetSel\s*=\s*document\.createElement\(\s*'select'\s*\)/,
+        'the panel must build a Target <select>');
+    assert.match(src, /function\s+_aspectRegisterPane\s*\(/,
+        '_aspectRegisterPane must record live panes for the picker');
+    assert.match(src, /_aspectRegisterPane\(\s*_paneKey\s*,/,
+        'camUpdate must register its pane each frame');
+});
+
+test('the panel has a dismiss (close) control', () => {
+    assert.match(
+        src,
+        /close\.textContent\s*=\s*'×'[\s\S]*?_setAspectPanelVisible\(\s*false\s*\)/,
+        'the panel header must have a × button that hides the panel',
+    );
 });
 
 test('camUpdate only writes cam.fov when it actually changes', () => {
@@ -153,14 +192,16 @@ test('camUpdate only writes cam.fov when it actually changes', () => {
     );
 });
 
-// ── A/B toggle + lifecycle reset ──────────────────────────────────────────────
+// ── Shortcut (open/close) + lifecycle reset ───────────────────────────────────
 
-test('an A/B toggle shortcut flips the tune enabled flag', () => {
+test('the shortcut opens/closes the tuner panel', () => {
     assert.match(
         src,
-        /registerShortcut\(\{[\s\S]*?const\s+t\s*=\s*_aspectTune\(\)\s*;[\s\S]*?t\.enabled\s*=\s*!\s*t\.enabled/,
-        'a registerShortcut handler must toggle the bridge enabled flag',
+        /registerShortcut\(\{[\s\S]*?_toggleAspectPanel\(\)/,
+        'a registerShortcut handler must toggle the tuner panel',
     );
+    assert.match(src, /function\s+_toggleAspectPanel\s*\(\)/,
+        '_toggleAspectPanel() must exist to reveal/dismiss the panel');
 });
 
 test('destroy() resets the pane aspect and restores the base fov', () => {
