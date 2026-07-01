@@ -1773,11 +1773,23 @@
         const reg = window.__h3dAspectPanes;
         if (!reg) return;
         const now = _aspectNowMs();
+        const ro = window.__h3dAspectReadout;
         Object.keys(reg).forEach((k) => {
-            if (now - (reg[k].seen || 0) > 1500) { delete reg[k]; _aspectPanesDirty = true; }
+            if (now - (reg[k].seen || 0) > 1500) {
+                delete reg[k];
+                // Prune the matching readout slot so it can't grow unbounded as
+                // songs/arrangements churn, and drop a dangling __last pointer.
+                if (ro) { delete ro[k]; if (ro.__last === k) delete ro.__last; }
+                _aspectPanesDirty = true;
+            }
         });
     }
 
+    // True while _syncAspectPanel is programmatically refreshing controls, so the
+    // synthetic 'input' events it dispatches to update labels don't write back
+    // into the tune (which would populate a full override for every field and
+    // spam localStorage). Real user input runs with this false.
+    let _aspectSyncing = false;
     // Read/write against the current edit target ('' → base, else pane override).
     function _aspectReadVal(k) {
         const base = _aspectTune();
@@ -1791,6 +1803,18 @@
         else {
             const m = base.__panels || (base.__panels = {});
             (m[_aspectEditTarget] || (m[_aspectEditTarget] = {}))[k] = v;
+        }
+        _aspectPersist();
+    }
+    // Clear a field: for the base target set the explicit auto value (null); for a
+    // pane target delete the override key so the pane re-inherits the base value
+    // (and drop the pane's override object once it's empty).
+    function _aspectClearVal(k) {
+        const base = _aspectTune();
+        if (!_aspectEditTarget) { base[k] = null; }
+        else {
+            const m = base.__panels, ov = m && m[_aspectEditTarget];
+            if (ov) { delete ov[k]; if (!Object.keys(ov).length) delete m[_aspectEditTarget]; }
         }
         _aspectPersist();
     }
@@ -1892,7 +1916,8 @@
             const show = () => { val.textContent = (+sl.value).toFixed(f.step < 1 ? 2 : 0); };
             show();
             sl.addEventListener('input', () => {
-                _aspectWriteVal(f.k, parseFloat(sl.value)); show();
+                show();                                   // label always refreshes
+                if (!_aspectSyncing) _aspectWriteVal(f.k, parseFloat(sl.value));
             });
             row.appendChild(sl); wrap.appendChild(row);
         });
@@ -1913,11 +1938,13 @@
             sl.disabled = !cb.checked;
             sl.style.cssText = 'width:100%;';
             cb.addEventListener('change', () => {
+                if (_aspectSyncing) return;
                 sl.disabled = !cb.checked;
-                _aspectWriteVal('hfovDeg', cb.checked ? parseFloat(sl.value) : null);
+                if (cb.checked) _aspectWriteVal('hfovDeg', parseFloat(sl.value));
+                else _aspectClearVal('hfovDeg');   // base → auto (null); pane → re-inherit base
             });
             sl.addEventListener('input', () => {
-                if (cb.checked) _aspectWriteVal('hfovDeg', parseFloat(sl.value));
+                if (!_aspectSyncing && cb.checked) _aspectWriteVal('hfovDeg', parseFloat(sl.value));
             });
             row.appendChild(sl); wrap.appendChild(row);
             _aspectHfovCb = cb; _aspectHfovSl = sl;
@@ -1972,19 +1999,27 @@
     function _syncAspectPanel() {
         if (!_aspectPanelEl) return;
         _aspectBuildTargets();
-        _aspectPanelEl.querySelectorAll('input[type=checkbox][data-k]').forEach((cb) => {
-            cb.checked = !!_aspectReadVal(cb.dataset.k);
-        });
-        _aspectPanelEl.querySelectorAll('input[type=range][data-k]').forEach((sl) => {
-            const v = _aspectReadVal(sl.dataset.k);
-            if (Number.isFinite(v)) sl.value = v;
-            sl.dispatchEvent(new Event('input'));   // refresh the value label
-        });
-        if (_aspectHfovCb) {
-            const hv = _aspectReadVal('hfovDeg');
-            _aspectHfovCb.checked = Number.isFinite(hv);
-            _aspectHfovSl.disabled = !_aspectHfovCb.checked;
-            if (Number.isFinite(hv)) _aspectHfovSl.value = hv;
+        // Guard so the synthetic 'input' events below only refresh labels and
+        // don't write the read-back values into the target (which would turn a
+        // sparse pane override into a full one and spam localStorage).
+        _aspectSyncing = true;
+        try {
+            _aspectPanelEl.querySelectorAll('input[type=checkbox][data-k]').forEach((cb) => {
+                cb.checked = !!_aspectReadVal(cb.dataset.k);
+            });
+            _aspectPanelEl.querySelectorAll('input[type=range][data-k]').forEach((sl) => {
+                const v = _aspectReadVal(sl.dataset.k);
+                if (Number.isFinite(v)) sl.value = v;
+                sl.dispatchEvent(new Event('input'));   // refresh the value label only
+            });
+            if (_aspectHfovCb) {
+                const hv = _aspectReadVal('hfovDeg');
+                _aspectHfovCb.checked = Number.isFinite(hv);
+                _aspectHfovSl.disabled = !_aspectHfovCb.checked;
+                if (Number.isFinite(hv)) _aspectHfovSl.value = hv;
+            }
+        } finally {
+            _aspectSyncing = false;
         }
     }
 

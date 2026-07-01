@@ -207,6 +207,34 @@ test('the target dropdown prunes dead panes and does not rebuild while focused',
         '_aspectBuildTargets must skip rebuilding while the select is focused');
 });
 
+test('programmatic sync does not write back into the tune', () => {
+    // _syncAspectPanel dispatches synthetic input events to refresh labels; the
+    // slider handler must skip the write while syncing, else opening/switching a
+    // target would populate a full override for every field.
+    assert.match(src, /_aspectSyncing\s*=\s*true[\s\S]*?finally[\s\S]*?_aspectSyncing\s*=\s*false/,
+        '_syncAspectPanel must set/reset the _aspectSyncing guard');
+    assert.match(src, /if\s*\(\s*!_aspectSyncing\s*\)\s*_aspectWriteVal\(\s*f\.k\s*,/,
+        'the slider input handler must skip the write while syncing');
+});
+
+test('unchecking hfov override clears a pane override key (re-inherits base)', () => {
+    assert.match(
+        src,
+        /function\s+_aspectClearVal\s*\(\s*k\s*\)[\s\S]*?delete\s+ov\[k\][\s\S]*?delete\s+m\[\s*_aspectEditTarget\s*\]/,
+        '_aspectClearVal must delete the pane override key (and empty object)',
+    );
+    assert.match(src, /else\s+_aspectClearVal\(\s*'hfovDeg'\s*\)/,
+        'unchecking the hfov override must call _aspectClearVal');
+});
+
+test('pruning drops the matching readout slot and a dangling __last', () => {
+    assert.match(
+        src,
+        /delete\s+reg\[k\]\s*;[\s\S]*?delete\s+ro\[k\]\s*;\s*if\s*\(\s*ro\.__last\s*===\s*k\s*\)\s*delete\s+ro\.__last/,
+        '_aspectPrunePanes must prune the readout cache alongside the registry',
+    );
+});
+
 test('the panel has a dismiss (close) control', () => {
     assert.match(
         src,
