@@ -122,6 +122,19 @@ function createHighway() {
     // where offsetParent === null isn't enough.
     let _visibleOverride = null;
     let _lastVisible = null;
+    // Throttled DOM visibility sampling. Reading canvas.offsetParent
+    // every rAF frame forces a style/layout recalc — profiled at ~0.5 s
+    // main-thread self-time over a 63 s session. The displayed state
+    // changes rarely (navigate / splitscreen panel toggle), so the DOM
+    // is only re-sampled every _DOM_VIS_CHECK_FRAMES frames; the cached
+    // value serves the frames in between (worst-case transition latency
+    // ~10 frames ≈ 166 ms at 60 Hz — fine for a hide/show pause signal).
+    // Set _domVisSampledFrame to NaN to force a fresh sample on the next
+    // check (done on init, canvas replace, resize, and override-clear so
+    // deliberate transitions don't wait out the throttle window).
+    const _DOM_VIS_CHECK_FRAMES = 10;
+    let _domVisCached = false;
+    let _domVisSampledFrame = NaN;
     let animFrame = null;
     // Paused-render throttle (feedBack#654). The rAF loop runs
     // unconditionally and only gates on visibility + ready, never on
@@ -1047,6 +1060,7 @@ function createHighway() {
         // suppress the first transition. Reset to null so the next
         // rAF tick re-emits unconditionally.
         _lastVisible = null;
+        _domVisSampledFrame = NaN; // fresh canvas → fresh DOM sample
         // Defensive notify for plugins / overlays that cache the
         // canvas element across events. Lazy lookups via
         // getElementById('highway') do not need this — they'll pick
@@ -1246,7 +1260,14 @@ function createHighway() {
     // hosts that need those use setVisible() instead.
     function _isHighwayVisible() {
         if (_visibleOverride !== null) return _visibleOverride;
-        return !!(canvas && canvas.offsetParent !== null);
+        // Throttled offsetParent read — see _DOM_VIS_CHECK_FRAMES above.
+        if (Number.isNaN(_domVisSampledFrame)
+            || ((_frameIdx - _domVisSampledFrame) | 0) >= _DOM_VIS_CHECK_FRAMES
+            || ((_frameIdx - _domVisSampledFrame) | 0) < 0) {
+            _domVisCached = !!(canvas && canvas.offsetParent !== null);
+            _domVisSampledFrame = _frameIdx;
+        }
+        return _domVisCached;
     }
 
     // Emit only on transition so renderer-side listeners aren't woken
@@ -2956,6 +2977,7 @@ function createHighway() {
         init(canvasEl, container) {
             canvas = canvasEl;
             _resizeContainer = container || null;
+            _domVisSampledFrame = NaN; // new mount → fresh DOM sample
             // Size the canvas BEFORE installing the renderer so
             // _setRenderer's init/resize calls see the real dimensions
             // instead of the default 300x150 backing store. Otherwise
@@ -2997,6 +3019,9 @@ function createHighway() {
 
         resize() {
             if (!canvas) return;
+            // Layout just changed (window resize / container swap) —
+            // re-sample DOM visibility on the next check.
+            _domVisSampledFrame = NaN;
             let w, h;
             if (_resizeContainer) {
                 const rect = _resizeContainer.getBoundingClientRect();
@@ -3771,6 +3796,10 @@ function createHighway() {
         // rAF tick.
         setVisible(v) {
             _visibleOverride = (v === null || v === undefined) ? null : !!v;
+            // Clearing the override resumes DOM-based detection — force a
+            // fresh offsetParent sample so the resulting transition (if
+            // any) emits now, not after the throttle window.
+            if (_visibleOverride === null) _domVisSampledFrame = NaN;
             _emitVisibilityIfChanged();
         },
         // Snapshot of the current visibility state (the override if
