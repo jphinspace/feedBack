@@ -1236,6 +1236,11 @@
 
     // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
     // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
+    // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
+    // plugin must run on downlevel hosts whose bundles don't carry the helper
+    // (it's called from ~30 sites incl. top-level helpers that don't receive a
+    // bundle). New code that already holds a bundle should prefer
+    // bundle.lowerBoundT / bundle.lowerBoundTime.
     function lowerBoundT(arr, t) {
         let lo = 0, hi = arr.length;
         while (lo < hi) {
@@ -3978,6 +3983,10 @@
         let _laneRailBoundsRefTpl = null;
         let _laneRailBoundsRefNotes = null;
         let _lastHwW = 0, _lastHwH = 0;
+        // Frame counter for throttling the CSS-box drift check in draw()
+        // (getBoundingClientRect is a forced layout read; see the comment
+        // at the check).
+        let _boxCheckCountdown = 0;
         // Last logical (CSS px) size handed to applySize(). #highway is a
         // flex:1 item, so its real rendered box (canvasSize()) can change as
         // the player layout settles after a song opens WITHOUT the backing
@@ -4677,10 +4686,12 @@
         // the full look (re-enable the rail bloom) per browser, no rebuild:
         //   localStorage.h3d_full_sus = '1'   // re-enable rail bloom halo
         //   delete localStorage.h3d_full_sus  // back to lean default
-        // Read once per frame at the top of update() so the flag takes effect
-        // live. The bloom pool/material/gaussian texture are kept intact
+        // Polled at ~1 Hz at the top of update() (perf: localStorage reads
+        // are synchronous) so the console flag still takes effect live.
+        // The bloom pool/material/gaussian texture are kept intact
         // (still pinned by the bloom unit tests and used by the opt-out path).
         let _leanSus = true;
+        let _leanSusPollCounter = 0;
 
         // Lifecycle flags
         let _isReady = false;
@@ -5267,7 +5278,17 @@
                     // appearing on top without depthTest.
                     depthTest: false,
                     depthWrite: false,
-                    side: T.DoubleSide,
+                    // forceSinglePass accompanies EVERY transparent DoubleSide
+                    // material in this file: without it, Three r158+ renders
+                    // each such object in TWO passes (back side then front),
+                    // setting material.needsUpdate on both — which forces a
+                    // full getParameters/program-cache lookup per object per
+                    // frame (profiled at ~4% of throttled main-thread time)
+                    // and doubles the draw calls. The two-pass path exists to
+                    // fix self-occlusion sorting on closed transparent meshes;
+                    // all our DoubleSide materials are flat unlit quads
+                    // (labels, rails, frames, lanes) where it buys nothing.
+                    side: T.DoubleSide, forceSinglePass: true,
                 });
                 sm.userData.h3dTechMeshMat = base;
             }
@@ -6250,6 +6271,12 @@
             return boxH;
         }
 
+        // Lyrics layout cache — measureText per syllable + row wrapping
+        // only changes when the displayed line(s), font size, or canvas
+        // width change, not per frame. Keyed below; the per-frame work is
+        // just drawing over the cached widths.
+        let _lyrRowsCache = null;
+
         function drawLyrics(lyrics, currentTime, ctx, W, H) {
             if (!lyrics._lines) {
                 const lines = [];
@@ -6297,37 +6324,51 @@
             const sylText = s => { const t = s.w || ''; return (t.endsWith('+') || t.endsWith('-')) ? t.slice(0, -1) : t; };
 
             ctx.font = `bold ${fontSize}px sans-serif`;
-            const spaceWidth = ctx.measureText(' ').width;
-            const maxWidth = W * 0.8;
+            let rows, spaceWidth, bgWidth;
+            const _lc = _lyrRowsCache;
+            if (_lc && _lc.lyricsRef === lyrics && _lc.idx === currentIdx
+                && _lc.shown === linesToShow.length
+                && _lc.fontSize === fontSize && _lc.W === W) {
+                rows = _lc.rows; spaceWidth = _lc.spaceWidth; bgWidth = _lc.bgWidth;
+            } else {
+                spaceWidth = ctx.measureText(' ').width;
+                const maxWidth = W * 0.8;
 
-            const rows = [];
-            for (const authoredLine of linesToShow) {
-                let row = [], rowWidth = 0;
-                for (const wordSyls of authoredLine.words) {
-                    const parts = [];
-                    let wordWidth = 0;
-                    for (const s of wordSyls) {
-                        const text = sylText(s);
-                        const w = ctx.measureText(text).width;
-                        parts.push({ syl: s, text, width: w });
-                        wordWidth += w;
+                rows = [];
+                for (const authoredLine of linesToShow) {
+                    let row = [], rowWidth = 0;
+                    for (const wordSyls of authoredLine.words) {
+                        const parts = [];
+                        let wordWidth = 0;
+                        for (const s of wordSyls) {
+                            const text = sylText(s);
+                            const w = ctx.measureText(text).width;
+                            parts.push({ syl: s, text, width: w });
+                            wordWidth += w;
+                        }
+                        const advance = wordWidth + spaceWidth;
+                        if (row.length > 0 && rowWidth + advance > maxWidth) { rows.push(row); row = []; rowWidth = 0; }
+                        row.push({ parts, advance });
+                        rowWidth += advance;
                     }
-                    const advance = wordWidth + spaceWidth;
-                    if (row.length > 0 && rowWidth + advance > maxWidth) { rows.push(row); row = []; rowWidth = 0; }
-                    row.push({ parts, advance });
-                    rowWidth += advance;
+                    if (row.length) rows.push(row);
                 }
-                if (row.length) rows.push(row);
+
+                bgWidth = 0;
+                for (const row of rows) {
+                    const rw = row.reduce((s, w) => s + w.advance, 0) - spaceWidth;
+                    if (rw > bgWidth) bgWidth = rw;
+                }
+                bgWidth = Math.min(bgWidth + 30, W * 0.85);
+                _lyrRowsCache = {
+                    lyricsRef: lyrics, idx: currentIdx,
+                    shown: linesToShow.length, fontSize, W,
+                    rows, spaceWidth, bgWidth,
+                };
             }
 
             const rowHeight = fontSize + 6;
             const totalHeight = rows.length * rowHeight + 10;
-            let bgWidth = 0;
-            for (const row of rows) {
-                const rw = row.reduce((s, w) => s + w.advance, 0) - spaceWidth;
-                if (rw > bgWidth) bgWidth = rw;
-            }
-            bgWidth = Math.min(bgWidth + 30, W * 0.85);
 
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.beginPath();
@@ -6629,7 +6670,7 @@
                 depthWrite: false,
                 depthTest: true,
                 blending: T.AdditiveBlending,
-                side: T.DoubleSide,
+                side: T.DoubleSide, forceSinglePass: true,
                 fog: true,
             }));
             mAccentHaloNear = mkAccentHaloMats(ACCENT_HALO_OP_NEAR);
@@ -6689,7 +6730,7 @@
                 new T.MeshBasicMaterial({
                     vertexColors: true,
                     transparent: true, opacity: 1.0, depthWrite: false,
-                    blending: T.AdditiveBlending, side: T.DoubleSide, fog: false,
+                    blending: T.AdditiveBlending, side: T.DoubleSide, forceSinglePass: true, fog: false,
                 }),
             ));
             // Notedetect feedback outline (issue #9): hot magenta-red (0xff0066, hue
@@ -6829,7 +6870,7 @@
                 emissiveIntensity: 0.9,
                 transparent: true,
                 opacity: 0.85,
-                side: T.DoubleSide,
+                side: T.DoubleSide, forceSinglePass: true,
                 depthWrite: false,
                 depthTest: false,
             });
@@ -6856,7 +6897,7 @@
                 color: CHORD_BOX_TEAL_HEX,
                 transparent: true, opacity: 0.85,
                 depthTest: false, depthWrite: false,
-                fog: false, side: T.DoubleSide,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
             });
             pSusRail = pool(noteG, () => {
                 const m = new T.Mesh(gSusRail, mSusRailBase.clone());
@@ -6877,7 +6918,7 @@
                 transparent: true, opacity: 0.55,
                 blending: T.AdditiveBlending,
                 depthTest: false, depthWrite: false,
-                fog: false, side: T.DoubleSide,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
             });
             pSusRailBloom = pool(noteG, () => {
                 const m = new T.Mesh(gSusRailBloom, mSusRailBloomBase.clone());
@@ -6891,7 +6932,7 @@
             gTechPlane = new T.PlaneGeometry(1, 1);
             pTechPlane = pool(noteG, () => {
                 const m = new T.Mesh(gTechPlane, new T.MeshBasicMaterial({
-                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide,
+                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide, forceSinglePass: true,
                 }));
                 m.renderOrder = 1000;
                 return m;
@@ -6945,7 +6986,7 @@
                     uniforms: { map: { value: spriteMat.map } },
                     vertexShader: _imTechVert,
                     fragmentShader: _imTechFrag,
-                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide,
+                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 const im = new T.InstancedMesh(geo, mat, IM_TECH_CAP);
                 im.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7058,7 +7099,7 @@
                     depthWrite: false,
                     depthTest: false,
                     fog: false,
-                    side: T.DoubleSide,
+                    side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pChordBox = pool(noteG, () => new T.Mesh(
@@ -7070,7 +7111,7 @@
                     depthWrite: false,
                     depthTest: false,
                     fog: false,
-                    side: T.DoubleSide,
+                    side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
 
@@ -7153,7 +7194,7 @@
                 _imPMXFillMat = new T.ShaderMaterial({
                     vertexShader: _imFillVert, fragmentShader: _imFillFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imPMXFill = new T.InstancedMesh(gPMXFill, _imPMXFillMat, IM_STRUM_CAP);
                 imPMXFill.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7233,7 +7274,7 @@
                 _imFHXFillMat = new T.ShaderMaterial({
                     vertexShader: _imFillVert, fragmentShader: _imFillFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imFHXFill = new T.InstancedMesh(gFHXFill, _imFHXFillMat, IM_STRUM_CAP);
                 imFHXFill.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7314,7 +7355,7 @@
                 _imPMXLinesMat = new T.ShaderMaterial({
                     vertexShader: _imLinesVert, fragmentShader: _imLinesFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imPMXLines = new T.InstancedMesh(gPMXLines, _imPMXLinesMat, IM_STRUM_CAP);
                 imPMXLines.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7396,7 +7437,7 @@
                 _imFHXLinesMat = new T.ShaderMaterial({
                     vertexShader: _imLinesVert, fragmentShader: _imLinesFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imFHXLines = new T.InstancedMesh(gFHXLines, _imFHXLinesMat, IM_STRUM_CAP);
                 imFHXLines.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7418,28 +7459,28 @@
                 gPMXFill,
                 new T.MeshBasicMaterial({
                     color: 0x000000, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pFHXFill = pool(noteG, () => new T.Mesh(
                 gFHXFill,
                 new T.MeshBasicMaterial({
                     color: 0x000000, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pMuteXLines = pool(noteG, () => new T.Mesh(
                 gPMXLines,
                 new T.MeshBasicMaterial({
                     color: 0xffffff, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pFHXLines = pool(noteG, () => new T.Mesh(
                 gFHXLines,
                 new T.MeshBasicMaterial({
                     color: 0xffffff, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
 
@@ -9886,6 +9927,105 @@
         }
 
         /* ── Per-frame rendering ─────────────────────────────────────────── */
+        // ── GPU pre-warm (perf: first-appearance hitches) ─────────────────
+        // Three.js compiles a material's shader program and uploads a
+        // texture the first frame the owning object renders — profiled as
+        // mid-song frame spikes (getParameters / texSubImage2D). Pay those
+        // costs during init (load spinner) instead:
+        //   _prewarmStatic()      — ren.compile() over the fully-built scene
+        //                           + deterministic label textures (fret
+        //                           numbers in every per-frame style/colour
+        //                           combo).
+        //   _prewarmChart(bundle) — chart-dependent labels (chord template
+        //                           names, section names); needs the ready
+        //                           bundle, so it runs once from the first
+        //                           draw() after each init.
+        // txtMat() rasterises into the unbounded cache these draws hit
+        // anyway; ren.initTexture() forces the GPU upload now.
+        // Swap a pooled label sprite's cached texture WITHOUT recompiling.
+        // Setting material.needsUpdate bumps material.version, which forces
+        // Three.js through getParameters/getProgramCacheKey on the next
+        // render. Swapping one non-null texture for another does NOT change
+        // the compiled program (the USE_MAP define is unchanged); only a
+        // null <-> non-null transition does, and pooled label sprites are
+        // constructed with a non-null map, so in practice this never
+        // recompiles. (Note: the DOMINANT getParameters churn turned out to
+        // be Three's transparent-DoubleSide two-pass path — see the
+        // forceSinglePass comment in _spriteMat2MeshMat — this helper
+        // removes the label-swap contribution on top of that.)
+        function _setLabelMap(sprite, srcMat) {
+            const m = sprite.material;
+            if (m.map === srcMat.map) return;
+            const nullnessChanged = (m.map == null) !== (srcMat.map == null);
+            m.map = srcMat.map;
+            if (nullnessChanged) m.needsUpdate = true;
+        }
+
+        let _chartPrewarmed = false;
+        function _prewarmTex(mat) {
+            if (mat && mat.map && ren) ren.initTexture(mat.map);
+        }
+        function _prewarmStatic() {
+            // MAINTENANCE NOTE: this list must cover every deterministic
+            // (chart-independent) material/texture the per-frame paths can
+            // request lazily. Adding a new label style or sprite factory to
+            // drawNote()/update() without warming it here silently
+            // reintroduces a first-appearance texSubImage2D/compile spike
+            // mid-song. Chart-dependent labels (chord names, section names)
+            // live in _prewarmChart.
+            try {
+                if (ren && scene && cam) ren.compile(scene, cam);
+            } catch (e) { console.warn('[3D-Hwy] prewarm compile:', e); }
+            try {
+                // Fret-number labels in the per-frame style/colour combos.
+                for (let f = 0; f <= NFRETS; f++) {
+                    _prewarmTex(txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret'));
+                    _prewarmTex(txtMat(f, FRET_LABEL_GOLD_HEX, false, 'fretRow'));
+                    _prewarmTex(txtMat(f, FRET_LABEL_IDLE_HEX, false, 'fretRow'));
+                    _prewarmTex(txtMat(f, '#ffffff', false, 'ghostFret'));
+                }
+                // Teaching marks (drawNote _drawTeachMark): finger hints
+                // T/1-4 (teachFg) and scale degrees 0-11 (teachSd).
+                _prewarmTex(txtMat('T', '#7fd1ff', false, 'teachFg'));
+                for (let i = 1; i <= 4; i++) _prewarmTex(txtMat(String(i), '#7fd1ff', false, 'teachFg'));
+                for (let i = 0; i <= 11; i++) _prewarmTex(txtMat(String(i), '#ffcc66', false, 'teachSd'));
+                // Technique sprite factories (own caches, keyed by packed
+                // number): PM/FH mute X, hammer/pull triangles, bend
+                // chevron stacks, slide direction arrows — per string
+                // colour of the active palette.
+                _prewarmTex(palmMuteXSpriteMat());
+                _prewarmTex(fretHandMuteXSpriteMat());
+                const _nWarm = Math.min(
+                    Math.max(nStr, 6),
+                    (activePalette && activePalette.length) || 0);
+                for (let s = 0; s < _nWarm; s++) {
+                    const hex = activePalette[s] || 0xffffff;
+                    _prewarmTex(triMat(true, hex));
+                    _prewarmTex(triMat(false, hex));
+                    for (let st = 1; st <= 4; st++) _prewarmTex(bendChevronMat(st, hex));
+                    const arrowHex = darkenHex(hex, 0.55);
+                    _prewarmTex(slideArrowMat(true, arrowHex));
+                    _prewarmTex(slideArrowMat(false, arrowHex));
+                }
+            } catch (e) { console.warn('[3D-Hwy] prewarm labels:', e); }
+        }
+        function _prewarmChart(bundle) {
+            try {
+                const tpls = bundle && bundle.chordTemplates;
+                if (Array.isArray(tpls)) {
+                    for (const tpl of tpls) {
+                        if (tpl && tpl.name) _prewarmTex(txtMat(tpl.name, '#e8d080', true, 'chord'));
+                    }
+                }
+                const secs = bundle && bundle.sections;
+                if (Array.isArray(secs)) {
+                    for (const s of secs) {
+                        if (s && s.name) _prewarmTex(txtMat(s.name, '#00cccc', true, 'section'));
+                    }
+                }
+            } catch (e) { console.warn('[3D-Hwy] prewarm chart labels:', e); }
+        }
+
         function update(bundle) {
             pbBeg(0);
             // [verdict glow] Apply the level-driven verdict brightness captured
@@ -9909,10 +10049,14 @@
             // Lean sustain rendering is the default (see declaration above):
             // the trail/ribbon outline always draws; only the additive rail
             // bloom halo is dropped. The full look (with bloom) is an opt-out.
-            // Cheap per-frame read so the console flag takes effect live.
-            try {
-                _leanSus = localStorage.getItem('h3d_full_sus') !== '1';
-            } catch (_) { _leanSus = true; }
+            // localStorage.getItem is a synchronous storage read — polled at
+            // ~1 Hz instead of every frame; the console flag still takes
+            // effect live (within a second).
+            if ((_leanSusPollCounter++ % 60) === 0) {
+                try {
+                    _leanSus = localStorage.getItem('h3d_full_sus') !== '1';
+                } catch (_) { _leanSus = true; }
+            }
             // Materialize the text-size multiplier from the user's slider.
             // textSize ∈ [0,1]; _textSizeMul ∈ [0.5, 1.5] with 0.5 ↦ 1.0×
             // so default behaviour matches what the renderer did pre-slider.
@@ -11856,7 +12000,7 @@
                             const lblW = 28 * K, lblH = 9 * K;
                             const lbl = pChordLbl.get();
                             const mat = txtMat(chordName, '#e8d080', true, 'chord');
-                            if (lbl.material.map !== mat.map) { lbl.material.map = mat.map; lbl.material.needsUpdate = true; }
+                            _setLabelMap(lbl, mat);
                             lbl.material.opacity = Math.min(1, 0.3 + fade * 0.7) * chordTailMul;
                             // Gold chord name: slight +X shift from flush-left so it sits farther right.
                             const lblWS = lblW * _textSizeMul;
@@ -11892,7 +12036,7 @@
                                     if (!text) return;
                                     const s = pChordLbl.get();
                                     const m = txtMat(text, colorHex, true, 'chord');
-                                    if (s.material.map !== m.map) { s.material.map = m.map; s.material.needsUpdate = true; }
+                                    _setLabelMap(s, m);
                                     s.material.opacity = opacity;
                                     s.position.set(baseX, hy, z);
                                     s.scale.set(hlW, hlH, 1);
@@ -12016,10 +12160,7 @@
                                 _seenChordFrets.add(f);
                                 const lbl = pNoteFretLabel.get();
                                 const mat = txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                                if (lbl.material.map !== mat.map) {
-                                    lbl.material.map = mat.map;
-                                    lbl.material.needsUpdate = true;
-                                }
+                                _setLabelMap(lbl, mat);
                                 lbl.position.set(xFretMid(f), yMinF, z);
                                 lbl.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_FRET_LABEL');
                                 const _flS = 7.0 * K * (1 + 0.4 * chDt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
@@ -12642,10 +12783,7 @@
                         const color = '#888888';
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
-                        if (sp.material.map !== m.map) {
-                            sp.material.map = m.map;
-                            sp.material.needsUpdate = true;
-                        }
+                        _setLabelMap(sp, m);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -13928,10 +14066,7 @@
                         _frameLabeledKeys.add(_flFrameKey);
                         const fretLabel  = pNoteFretLabel.get();
                         const cachedMat  = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                        if (fretLabel.material.map !== cachedMat.map) {
-                            fretLabel.material.map = cachedMat.map;
-                            fretLabel.material.needsUpdate = true;
-                        }
+                        _setLabelMap(fretLabel, cachedMat);
                         fretLabel.position.set(x, labelY, noteZ);
                         fretLabel.renderOrder = renderOrderForLayerAtZ(noteZ,
                             _isArpNote
@@ -13956,10 +14091,7 @@
                             if (!text) return;
                             const spr = pTeachMarkLbl.get();
                             const m = txtMat(text, colorHex, false, cacheKey);
-                            if (spr.material.map !== m.map) {
-                                spr.material.map = m.map;
-                                spr.material.needsUpdate = true;
-                            }
+                            _setLabelMap(spr, m);
                             spr.position.set(x + dx, labelY, noteZ);
                             spr.renderOrder = renderOrderForLayerAtZ(noteZ,
                                 _isArpNote ? 'ARP_NOTE_FRET_LABEL' : 'NOTE_FRET_LABEL');
@@ -13993,10 +14125,7 @@
                     const _isArp2   = arpBounds !== null;
                     const fl2 = pNoteFretLabel.get();
                     const cm2 = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                    if (fl2.material.map !== cm2.map) {
-                        fl2.material.map = cm2.map;
-                        fl2.material.needsUpdate = true;
-                    }
+                    _setLabelMap(fl2, cm2);
                     fl2.position.set(x, _labelY2, noteZ);
                     fl2.renderOrder = renderOrderForLayerAtZ(noteZ,
                         _isArp2
@@ -14962,6 +15091,12 @@
                         _invertedForBoard = _invertedCached;
                         _leftyForBoard = _leftyCached;
                         if (!initScene()) { _unsubscribeFocus(); _rejectReady(new Error('initScene failed')); return; }
+                        // Pre-compile shaders + upload deterministic label
+                        // textures while the load spinner is still up; the
+                        // chart-dependent half runs on first draw() (bundle
+                        // arrays are only guaranteed populated post-ready).
+                        _prewarmStatic();
+                        _chartPrewarmed = false;
                         const sz = canvasSize(highwayCanvas);
                         // Mark ready before RAF so any resize(w,h) calls that arrive
                         // in the meantime (e.g. from sizeCanvases()) are applied directly.
@@ -15000,6 +15135,10 @@
 
             draw(bundle) {
                 if (!_isReady) return;
+                if (!_chartPrewarmed) {
+                    _chartPrewarmed = true;
+                    _prewarmChart(bundle);
+                }
                 _invertedCached = !!bundle.inverted;
                 _leftyCached = !!bundle.lefty;
                 const newNStr = resolveStringCount(bundle);
@@ -15042,25 +15181,40 @@
                 //     for the pre-settle (too-tall) size and crops the near strings
                 //     / fret numbers until the user un/re-maximizes the window.
                 if (highwayCanvas) {
-                    const box = canvasSize(highwayCanvas);
-                    if (highwayCanvas.width !== _lastHwW || highwayCanvas.height !== _lastHwH) {
-                        _lastHwW = highwayCanvas.width;
-                        _lastHwH = highwayCanvas.height;
-                        if (box.w > 0 && box.h > 0) applySize(box.w, box.h);
-                    } else if (box.w > 0 && box.h > 0 &&
-                            (Math.abs(box.w - _appliedW) > 1 || Math.abs(box.h - _appliedH) > 1)) {
-                        applySize(box.w, box.h);
-                    } else if (!_wrapPinned && box.w > 0 && box.h > 0 &&
-                            highwayCanvas.offsetWidth > 0 && highwayCanvas.offsetHeight > 0) {
-                        //  3. The overlay pin couldn't be applied at init because
-                        //     #highway had no layout yet (offsetWidth/Height === 0),
-                        //     so applySize() only set the wrap height. The canvas has
-                        //     now laid out but to the same logical size, so neither
-                        //     drift branch above fires — re-run applySize to pin the
-                        //     wrap to the canvas box now that its offsets are real.
-                        //     Otherwise the overlay stays at top:0;left:0;right:0 and
-                        //     a strip of #highway is exposed on first load / split.
-                        applySize(box.w, box.h);
+                    // Backing-store drift (branch 1) is detected with cheap
+                    // property reads every frame. The CSS-box checks (branches
+                    // 2/3) need canvasSize() → getBoundingClientRect(), a
+                    // forced layout read — profiled at ~1.2% of throttled
+                    // main-thread time when run per frame. Throttle the box
+                    // read to every 10th frame (plus whenever the backing
+                    // store changed or the wrap isn't pinned yet): the layout
+                    // settle it exists to catch plays out over hundreds of ms
+                    // right after a song opens, so a ~166 ms detection cadence
+                    // loses nothing visible.
+                    const _bsChanged = highwayCanvas.width !== _lastHwW
+                        || highwayCanvas.height !== _lastHwH;
+                    _boxCheckCountdown = (_boxCheckCountdown + 1) % 10;
+                    if (_bsChanged || !_wrapPinned || _boxCheckCountdown === 0) {
+                        const box = canvasSize(highwayCanvas);
+                        if (_bsChanged) {
+                            _lastHwW = highwayCanvas.width;
+                            _lastHwH = highwayCanvas.height;
+                            if (box.w > 0 && box.h > 0) applySize(box.w, box.h);
+                        } else if (box.w > 0 && box.h > 0 &&
+                                (Math.abs(box.w - _appliedW) > 1 || Math.abs(box.h - _appliedH) > 1)) {
+                            applySize(box.w, box.h);
+                        } else if (!_wrapPinned && box.w > 0 && box.h > 0 &&
+                                highwayCanvas.offsetWidth > 0 && highwayCanvas.offsetHeight > 0) {
+                            //  3. The overlay pin couldn't be applied at init because
+                            //     #highway had no layout yet (offsetWidth/Height === 0),
+                            //     so applySize() only set the wrap height. The canvas has
+                            //     now laid out but to the same logical size, so neither
+                            //     drift branch above fires — re-run applySize to pin the
+                            //     wrap to the canvas box now that its offsets are real.
+                            //     Otherwise the overlay stays at top:0;left:0;right:0 and
+                            //     a strip of #highway is exposed on first load / split.
+                            applySize(box.w, box.h);
+                        }
                     }
                 }
                 update(bundle);
