@@ -5278,7 +5278,17 @@
                     // appearing on top without depthTest.
                     depthTest: false,
                     depthWrite: false,
-                    side: T.DoubleSide,
+                    // forceSinglePass accompanies EVERY transparent DoubleSide
+                    // material in this file: without it, Three r158+ renders
+                    // each such object in TWO passes (back side then front),
+                    // setting material.needsUpdate on both — which forces a
+                    // full getParameters/program-cache lookup per object per
+                    // frame (profiled at ~4% of throttled main-thread time)
+                    // and doubles the draw calls. The two-pass path exists to
+                    // fix self-occlusion sorting on closed transparent meshes;
+                    // all our DoubleSide materials are flat unlit quads
+                    // (labels, rails, frames, lanes) where it buys nothing.
+                    side: T.DoubleSide, forceSinglePass: true,
                 });
                 sm.userData.h3dTechMeshMat = base;
             }
@@ -6660,7 +6670,7 @@
                 depthWrite: false,
                 depthTest: true,
                 blending: T.AdditiveBlending,
-                side: T.DoubleSide,
+                side: T.DoubleSide, forceSinglePass: true,
                 fog: true,
             }));
             mAccentHaloNear = mkAccentHaloMats(ACCENT_HALO_OP_NEAR);
@@ -6720,7 +6730,7 @@
                 new T.MeshBasicMaterial({
                     vertexColors: true,
                     transparent: true, opacity: 1.0, depthWrite: false,
-                    blending: T.AdditiveBlending, side: T.DoubleSide, fog: false,
+                    blending: T.AdditiveBlending, side: T.DoubleSide, forceSinglePass: true, fog: false,
                 }),
             ));
             // Notedetect feedback outline (issue #9): hot magenta-red (0xff0066, hue
@@ -6860,7 +6870,7 @@
                 emissiveIntensity: 0.9,
                 transparent: true,
                 opacity: 0.85,
-                side: T.DoubleSide,
+                side: T.DoubleSide, forceSinglePass: true,
                 depthWrite: false,
                 depthTest: false,
             });
@@ -6887,7 +6897,7 @@
                 color: CHORD_BOX_TEAL_HEX,
                 transparent: true, opacity: 0.85,
                 depthTest: false, depthWrite: false,
-                fog: false, side: T.DoubleSide,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
             });
             pSusRail = pool(noteG, () => {
                 const m = new T.Mesh(gSusRail, mSusRailBase.clone());
@@ -6908,7 +6918,7 @@
                 transparent: true, opacity: 0.55,
                 blending: T.AdditiveBlending,
                 depthTest: false, depthWrite: false,
-                fog: false, side: T.DoubleSide,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
             });
             pSusRailBloom = pool(noteG, () => {
                 const m = new T.Mesh(gSusRailBloom, mSusRailBloomBase.clone());
@@ -6922,7 +6932,7 @@
             gTechPlane = new T.PlaneGeometry(1, 1);
             pTechPlane = pool(noteG, () => {
                 const m = new T.Mesh(gTechPlane, new T.MeshBasicMaterial({
-                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide,
+                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide, forceSinglePass: true,
                 }));
                 m.renderOrder = 1000;
                 return m;
@@ -6976,7 +6986,7 @@
                     uniforms: { map: { value: spriteMat.map } },
                     vertexShader: _imTechVert,
                     fragmentShader: _imTechFrag,
-                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide,
+                    transparent: true, depthTest: false, depthWrite: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 const im = new T.InstancedMesh(geo, mat, IM_TECH_CAP);
                 im.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7089,7 +7099,7 @@
                     depthWrite: false,
                     depthTest: false,
                     fog: false,
-                    side: T.DoubleSide,
+                    side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pChordBox = pool(noteG, () => new T.Mesh(
@@ -7101,7 +7111,7 @@
                     depthWrite: false,
                     depthTest: false,
                     fog: false,
-                    side: T.DoubleSide,
+                    side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
 
@@ -7184,7 +7194,7 @@
                 _imPMXFillMat = new T.ShaderMaterial({
                     vertexShader: _imFillVert, fragmentShader: _imFillFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imPMXFill = new T.InstancedMesh(gPMXFill, _imPMXFillMat, IM_STRUM_CAP);
                 imPMXFill.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7264,7 +7274,7 @@
                 _imFHXFillMat = new T.ShaderMaterial({
                     vertexShader: _imFillVert, fragmentShader: _imFillFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imFHXFill = new T.InstancedMesh(gFHXFill, _imFHXFillMat, IM_STRUM_CAP);
                 imFHXFill.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7345,7 +7355,7 @@
                 _imPMXLinesMat = new T.ShaderMaterial({
                     vertexShader: _imLinesVert, fragmentShader: _imLinesFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imPMXLines = new T.InstancedMesh(gPMXLines, _imPMXLinesMat, IM_STRUM_CAP);
                 imPMXLines.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7427,7 +7437,7 @@
                 _imFHXLinesMat = new T.ShaderMaterial({
                     vertexShader: _imLinesVert, fragmentShader: _imLinesFrag,
                     transparent: true, depthTest: false, depthWrite: false,
-                    fog: false, side: T.DoubleSide,
+                    fog: false, side: T.DoubleSide, forceSinglePass: true,
                 });
                 imFHXLines = new T.InstancedMesh(gFHXLines, _imFHXLinesMat, IM_STRUM_CAP);
                 imFHXLines.instanceMatrix.setUsage(T.DynamicDrawUsage);
@@ -7449,28 +7459,28 @@
                 gPMXFill,
                 new T.MeshBasicMaterial({
                     color: 0x000000, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pFHXFill = pool(noteG, () => new T.Mesh(
                 gFHXFill,
                 new T.MeshBasicMaterial({
                     color: 0x000000, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pMuteXLines = pool(noteG, () => new T.Mesh(
                 gPMXLines,
                 new T.MeshBasicMaterial({
                     color: 0xffffff, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
             pFHXLines = pool(noteG, () => new T.Mesh(
                 gFHXLines,
                 new T.MeshBasicMaterial({
                     color: 0xffffff, transparent: true, opacity: 1,
-                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide,
+                    depthWrite: false, depthTest: false, fog: false, side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
 
@@ -9935,12 +9945,14 @@
         // Swap a pooled label sprite's cached texture WITHOUT recompiling.
         // Setting material.needsUpdate bumps material.version, which forces
         // Three.js through getParameters/getProgramCacheKey on the next
-        // render — profiled at ~4% of throttled main-thread time from the
-        // per-frame label map swaps in dense charts. Swapping one non-null
-        // texture for another does NOT change the compiled program (the
-        // USE_MAP define is unchanged); only a null <-> non-null transition
-        // does, and pooled label sprites are constructed with a non-null
-        // map, so in practice this never recompiles.
+        // render. Swapping one non-null texture for another does NOT change
+        // the compiled program (the USE_MAP define is unchanged); only a
+        // null <-> non-null transition does, and pooled label sprites are
+        // constructed with a non-null map, so in practice this never
+        // recompiles. (Note: the DOMINANT getParameters churn turned out to
+        // be Three's transparent-DoubleSide two-pass path — see the
+        // forceSinglePass comment in _spriteMat2MeshMat — this helper
+        // removes the label-swap contribution on top of that.)
         function _setLabelMap(sprite, srcMat) {
             const m = sprite.material;
             if (m.map === srcMat.map) return;
