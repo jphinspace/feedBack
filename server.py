@@ -598,6 +598,22 @@ class MetadataDB:
             )
         """)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_song_tags_tag ON song_tags(tag COLLATE NOCASE)")
+        # Artist-name aliases (P4): "ACDC" → "AC/DC", "the beatles" → "The Beatles".
+        # A CANONICALIZATION OVERRIDE applied AT DISPLAY only — the scanner-derived
+        # `songs.artist` and the feedpak files are never rewritten (a rescan can't
+        # fight the user; one alias row fixes every matching song at once). Keyed by
+        # the raw artist string (COLLATE NOCASE so case variants collapse), so it is
+        # NOT filename-keyed → never touched by delete_missing/delete_song (an alias
+        # outlives the songs that motivated it, ready for re-import). mb_artist_id is
+        # reserved for a future confident MusicBrainz match (unused now).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS artist_alias (
+                raw_name TEXT PRIMARY KEY COLLATE NOCASE,
+                canonical_name TEXT NOT NULL,
+                mb_artist_id TEXT,
+                updated_at TEXT
+            )
+        """)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS loops (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1554,6 +1570,173 @@ class MetadataDB:
     def _existing_song_filter(self) -> str:
         return self._EXISTING_SONG_FILTER
 
+    # ── Artist-name canonicalization (P4) ─────────────────────────────────────
+    # "Apply at display": resolve songs.artist through the artist_alias override
+    # for the deduped dropdown/tree (query_artists) — else keep the raw name. The
+    # correlated PK-lookup subquery is fine for the offset-paged catalog; the grid
+    # FILTER instead expands a canonical name to its raw variants (index-friendly,
+    # keyset-safe), and the grid DISPLAY re-labels rows in Python via alias_map().
+    _EFFECTIVE_ARTIST_SQL = (
+        "COALESCE((SELECT aa.canonical_name FROM artist_alias aa "
+        "WHERE aa.raw_name = songs.artist COLLATE NOCASE), songs.artist)"
+    )
+
+    def alias_map(self) -> dict:
+        """{raw_name_lower: canonical_name} for every alias — one read to re-label
+        a page of grid rows without an N+1. Lowercased keys so the lookup matches
+        the raw artist case-insensitively (the table is COLLATE NOCASE)."""
+        return {r[0].lower(): r[1] for r in self.conn.execute(
+            "SELECT raw_name, canonical_name FROM artist_alias").fetchall()}
+
+    def effective_artist(self, raw: str, amap: dict | None = None) -> str:
+        """Canonical display name for a raw artist (alias override else itself)."""
+        if raw is None:
+            return raw
+        amap = self.alias_map() if amap is None else amap
+        return amap.get(raw.lower(), raw)
+
+    def _single_hop_canonical(self, name: str) -> str | None:
+        """The stored canonical for a raw name (a SINGLE hop), or None if `name`
+        is not itself an alias key. Case-insensitive (the table is COLLATE NOCASE)
+        — the shared primitive the chain-flatteners reuse."""
+        if not name:
+            return None
+        row = self.conn.execute(
+            "SELECT canonical_name FROM artist_alias WHERE raw_name = ? COLLATE NOCASE",
+            (name,)).fetchone()
+        return row[0] if row else None
+
+    def _terminal_canonical(self, name: str) -> str:
+        """Follow the alias chain from `name` to its TERMINAL canonical — the first
+        name that is not itself an alias key — so transitive chains (raw → mid →
+        … → terminal) collapse to one hop. A visited-set breaks cycles: if we come
+        back to a name already seen we return the last name reached rather than
+        looping. Reuses the single-hop primitive."""
+        seen: set = set()
+        cur = name
+        while True:
+            key = (cur or "").lower()
+            if key in seen:
+                return cur           # cycle — stop, return where we are
+            seen.add(key)
+            nxt = self._single_hop_canonical(cur)
+            if nxt is None or (nxt or "").lower() == key:
+                return cur           # not an alias key (or self) → terminal
+            cur = nxt
+
+    def _raw_variants_for(self, canonical: str) -> list:
+        """Every raw artist string that should match a filter on `canonical`: the
+        canonical name itself plus all raw names aliased to it (case-insensitive).
+        Lets the artist filter be `artist IN (...)` — uses the artist index and is
+        keyset-safe, instead of a per-row COALESCE subquery."""
+        rows = self.conn.execute(
+            "SELECT raw_name FROM artist_alias WHERE canonical_name = ? COLLATE NOCASE",
+            (canonical,)).fetchall()
+        seen, out = set(), []
+        for name in [canonical, *[r[0] for r in rows]]:
+            k = (name or "").lower()
+            if name and k not in seen:
+                seen.add(k)
+                out.append(name)
+        return out
+
+    def list_artist_aliases(self) -> list:
+        """All alias rows (raw → canonical), canonical then raw, for the Tidy-up
+        'current merges' list."""
+        rows = self.conn.execute(
+            "SELECT raw_name, canonical_name, mb_artist_id FROM artist_alias "
+            "ORDER BY canonical_name COLLATE NOCASE, raw_name COLLATE NOCASE").fetchall()
+        return [{"raw_name": r[0], "canonical_name": r[1], "mb_artist_id": r[2]} for r in rows]
+
+    def _set_artist_alias_locked(self, raw_name: str, canonical_name: str,
+                                 mb_artist_id: str | None = None) -> dict:
+        """Core upsert — assumes self._lock is HELD and does NOT commit (so the
+        single set and the batch merge can share one transaction). Flattens chains
+        and guards cycles:
+
+        * A self-alias (raw == canonical) DROPs any existing row (the UI un-merge).
+        * Otherwise `canonical` is resolved to its TERMINAL canonical, so setting a
+          new hop onto an existing chain collapses to one hop rather than growing a
+          two-hop chain that grouping/filtering would then split.
+        * Cycle guard: if that terminal IS `raw`, storing would loop the chain back
+          on itself — we no-op and report it so the caller can surface a failure.
+        * Forward-flatten: any existing rows whose canonical == `raw` are re-pointed
+          to the new terminal, so previously-merged variants follow `raw` onward.
+
+        Returns a result dict {ok, raw_name, canonical_name, ...}."""
+        raw = (raw_name or "").strip()
+        canon = (canonical_name or "").strip()
+        if not raw or not canon:
+            raise ValueError("raw_name and canonical_name are required")
+        if raw.lower() == canon.lower():
+            self.conn.execute("DELETE FROM artist_alias WHERE raw_name = ? COLLATE NOCASE", (raw,))
+            return {"ok": True, "raw_name": raw, "canonical_name": raw, "unmerged": True}
+        terminal = self._terminal_canonical(canon)
+        if (terminal or "").lower() == raw.lower():
+            # raw → … → raw would be a cycle; refuse rather than corrupt the chain.
+            return {"ok": False, "reason": "cycle", "raw_name": raw,
+                    "canonical_name": canon, "terminal": terminal}
+        self.conn.execute(
+            "INSERT INTO artist_alias (raw_name, canonical_name, mb_artist_id, updated_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(raw_name) DO UPDATE SET "
+            "canonical_name = excluded.canonical_name, "
+            "mb_artist_id = excluded.mb_artist_id, updated_at = excluded.updated_at",
+            (raw, terminal, mb_artist_id))
+        # Re-point any variants that were previously merged INTO raw onto the new
+        # terminal (raw itself now aliases onward, so it can't stay a canonical).
+        self.conn.execute(
+            "UPDATE artist_alias SET canonical_name = ?, updated_at = datetime('now') "
+            "WHERE canonical_name = ? COLLATE NOCASE AND raw_name != ? COLLATE NOCASE",
+            (terminal, raw, terminal))
+        return {"ok": True, "raw_name": raw, "canonical_name": terminal}
+
+    def set_artist_alias(self, raw_name: str, canonical_name: str,
+                         mb_artist_id: str | None = None) -> dict:
+        """Upsert one raw→canonical override (chain-flattened, cycle-guarded — see
+        _set_artist_alias_locked). Returns the result dict."""
+        with self._lock:
+            result = self._set_artist_alias_locked(raw_name, canonical_name, mb_artist_id)
+            self.conn.commit()
+        return result
+
+    def remove_artist_alias(self, raw_name: str) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM artist_alias WHERE raw_name = ? COLLATE NOCASE", (raw_name,))
+            self.conn.commit()
+
+    def merge_artists(self, raw_names, canonical_name: str) -> int:
+        """Point several raw artist names at one canonical (the Tidy-up merge).
+        Skips the canonical's own self-alias. Returns the count of aliases written.
+        ATOMIC: the whole batch runs under one lock and one commit, so a mid-batch
+        cycle rejection can't leave a half-applied merge."""
+        canon = (canonical_name or "").strip()
+        if not canon:
+            raise ValueError("canonical_name is required")
+        n = 0
+        with self._lock:
+            for raw in (raw_names or []):
+                r = (raw or "").strip()
+                if r and r.lower() != canon.lower():
+                    result = self._set_artist_alias_locked(r, canon)
+                    if result.get("ok"):
+                        n += 1
+            self.conn.commit()
+        return n
+
+    def raw_artists(self, limit: int = 2000) -> list:
+        """Distinct RAW artist names in the library with song counts + their
+        current canonical (for the Tidy-up picker — you merge raw variants). Raw,
+        not effective, so both 'ACDC' and 'AC/DC' show as separate mergeable rows."""
+        limit = max(1, min(10000, int(limit)))
+        amap = self.alias_map()
+        rows = self.conn.execute(
+            "SELECT artist, COUNT(*) c FROM songs WHERE artist IS NOT NULL AND artist != '' "
+            "GROUP BY artist COLLATE NOCASE ORDER BY c DESC, artist COLLATE NOCASE LIMIT ?",
+            (limit,)).fetchall()
+        return [{"name": r[0], "count": r[1],
+                 "canonical": amap.get((r[0] or "").lower(), r[0])} for r in rows]
+
     def record_session(self, filename: str, arrangement: int, *, score: int,
                        accuracy: float, last_position=None) -> dict:
         """Record a scored play: plays += 1, best_* = max, last_* = new."""
@@ -2222,8 +2405,14 @@ class MetadataDB:
             where += " AND format = ?"
             params.append(format_filter)
         if artist_filter:
-            where += " AND artist = ? COLLATE NOCASE"
-            params.append(artist_filter)
+            # The dropdown/tree list CANONICAL names (query_artists), so a filter
+            # value is canonical — expand it to every raw variant aliased to it so
+            # picking "AC/DC" returns songs tagged "ACDC" too. `artist IN (...)`
+            # keeps the artist index (keyset-safe), unlike a per-row COALESCE.
+            variants = self._raw_variants_for(artist_filter)
+            ph = ",".join(["?"] * len(variants))
+            where += f" AND artist COLLATE NOCASE IN ({ph})"
+            params += variants
         if album_filter:
             where += " AND album = ? COLLATE NOCASE"
             params.append(album_filter)
@@ -2550,9 +2739,17 @@ class MetadataDB:
         fns = [s["filename"] for s in songs]
         udm = self.user_meta_map(fns)
         tgm = self.tags_map(fns)
+        # Canonical artist at display (P4): re-label the card's artist through the
+        # alias override so "ACDC" reads as "AC/DC". Display-only — the row's sort
+        # position (raw artist) is untouched, so a card can show a canonical name
+        # that differs from its A–Z bucket for cross-letter aliases; the full
+        # sort/rail reindex under aliases is the P5a materialization pass.
+        amap = self.alias_map()
         for s in songs:
             s["user_difficulty"] = udm.get(s["filename"])
             s["tags"] = tgm.get(s["filename"], [])
+            if amap:
+                s["artist"] = amap.get((s.get("artist") or "").lower(), s.get("artist"))
         return songs, total
 
     def query_artists(self, letter: str = "", q: str = "",
@@ -2576,19 +2773,26 @@ class MetadataDB:
             stems_has=stems_has, stems_lacks=stems_lacks,
             has_lyrics=has_lyrics, tunings=tunings, naming_mode=naming_mode,
         )
+        # Canonicalize artists at display when aliases exist (P4): dedupe / group /
+        # letter / order on the EFFECTIVE artist so "ACDC" + "AC/DC" list as one
+        # entry. With no aliases, `art_expr` stays the plain (indexed) `artist`
+        # column, so the common case pays zero subquery cost.
+        has_aliases = self.conn.execute("SELECT 1 FROM artist_alias LIMIT 1").fetchone() is not None
+        art_expr = self._EFFECTIVE_ARTIST_SQL if has_aliases else "artist"
+
         if letter == "#":
-            where += " AND artist NOT GLOB '[A-Za-z]*'"
+            where += f" AND ({art_expr}) NOT GLOB '[A-Za-z]*'"
         elif letter:
-            where += " AND UPPER(SUBSTR(artist, 1, 1)) = ?"
+            where += f" AND UPPER(SUBSTR(({art_expr}), 1, 1)) = ?"
             params.append(letter.upper())
 
-        # Get paginated distinct artists
+        # Get paginated distinct (effective) artists
         total_artists = self.conn.execute(
-            f"SELECT COUNT(DISTINCT artist COLLATE NOCASE) FROM songs {where}", params
+            f"SELECT COUNT(DISTINCT ({art_expr}) COLLATE NOCASE) FROM songs {where}", params
         ).fetchone()[0]
 
         artist_rows = self.conn.execute(
-            f"SELECT DISTINCT artist COLLATE NOCASE as a FROM songs {where} ORDER BY a LIMIT ? OFFSET ?",
+            f"SELECT DISTINCT ({art_expr}) COLLATE NOCASE as a FROM songs {where} ORDER BY a LIMIT ? OFFSET ?",
             params + [size, page * size]
         ).fetchall()
         artist_names = [r[0] for r in artist_rows]
@@ -2596,15 +2800,15 @@ class MetadataDB:
         if not artist_names:
             return [], total_artists
 
-        # Fetch songs for these artists only
+        # Fetch songs for these (effective) artists only
         placeholders = ",".join(["?"] * len(artist_names))
-        song_where = f"{where} AND artist COLLATE NOCASE IN ({placeholders})"
+        song_where = f"{where} AND ({art_expr}) COLLATE NOCASE IN ({placeholders})"
         song_params = params + artist_names
 
         rows = self.conn.execute(
-            f"SELECT filename, title, artist, album, year, duration, tuning, arrangements, has_lyrics, "
+            f"SELECT filename, title, ({art_expr}) as artist, album, year, duration, tuning, arrangements, has_lyrics, "
             f"format, stem_count, stem_ids, tuning_name "
-            f"FROM songs {song_where} ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, title COLLATE NOCASE",
+            f"FROM songs {song_where} ORDER BY ({art_expr}) COLLATE NOCASE, album COLLATE NOCASE, title COLLATE NOCASE",
             song_params
         ).fetchall()
 
@@ -5543,6 +5747,62 @@ def list_tags():
     """All personal tags in use (over still-present songs), most-used first —
     powers the tag filter UI."""
     return {"tags": meta_db.all_tags()}
+
+
+# ── Artist aliases / Tidy-up (P4) ────────────────────────────────────────────
+# Canonicalize messy artist tags at DISPLAY ("ACDC" → "AC/DC") without touching
+# the feedpak files or the scanner-derived songs.artist. All DB-only.
+
+@app.get("/api/artist-aliases")
+def list_artist_aliases():
+    """Existing raw→canonical overrides (the Tidy-up 'current merges' list)."""
+    return {"aliases": meta_db.list_artist_aliases()}
+
+
+@app.get("/api/artists/raw")
+def list_raw_artists(limit: int = 2000):
+    """Distinct RAW artist names + song counts + current canonical — the Tidy-up
+    picker (you merge raw variants into one canonical)."""
+    return {"artists": meta_db.raw_artists(limit)}
+
+
+@app.post("/api/artist-aliases")
+def set_artist_alias(data: dict):
+    """Upsert one override: {raw_name, canonical_name, mb_artist_id?}. A self-alias
+    (raw == canonical) clears the row instead (un-merge)."""
+    raw = (data.get("raw_name") or "").strip()
+    canon = (data.get("canonical_name") or "").strip()
+    if not raw or not canon:
+        return JSONResponse({"error": "raw_name and canonical_name are required"}, 400)
+    result = meta_db.set_artist_alias(raw, canon, (data.get("mb_artist_id") or None))
+    if not result.get("ok"):
+        # Would form a cycle (raw → … → raw) — refuse rather than corrupt the chain.
+        return JSONResponse(
+            {"error": "alias would create a cycle", "raw_name": raw, "canonical_name": canon},
+            409)
+    return {"ok": True, "raw_name": raw, "canonical_name": result.get("canonical_name", canon)}
+
+
+@app.post("/api/artist-aliases/merge")
+def merge_artist_aliases(data: dict):
+    """Merge several raw artist variants into one canonical:
+    {raw_names: [...], canonical_name}. The canonical's own self-alias is skipped.
+    Returns {merged: N}."""
+    canon = (data.get("canonical_name") or "").strip()
+    raws = data.get("raw_names")
+    if not canon:
+        return JSONResponse({"error": "canonical_name is required"}, 400)
+    if not isinstance(raws, list) or not raws:
+        return JSONResponse({"error": "raw_names must be a non-empty array"}, 400)
+    n = meta_db.merge_artists(raws, canon)
+    return {"merged": n, "canonical_name": canon}
+
+
+@app.delete("/api/artist-aliases/{raw_name:path}")
+def delete_artist_alias(raw_name: str):
+    """Remove one override so that raw artist stands on its own again."""
+    meta_db.remove_artist_alias(raw_name)
+    return {"ok": True}
 
 
 # ── Player profile / unified XP / streak (fee[dB]ack v0.3.0) ──────────────────
