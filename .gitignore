@@ -50,11 +50,8 @@ plugins/drum_highway_3d/__pycache__/
 !plugins/keys_highway_3d/
 !plugins/keys_highway_3d/**
 plugins/keys_highway_3d/__pycache__/
-# Planning-only exception for an in-progress plugin; keep future implementation
-# files ignored until the plugin is intentionally promoted.
 !plugins/multipad_highway_3d/
-plugins/multipad_highway_3d/*
-!plugins/multipad_highway_3d/PLANNING.md
+!plugins/multipad_highway_3d/**
 node_modules/
 test-results/
 playwright-report/
