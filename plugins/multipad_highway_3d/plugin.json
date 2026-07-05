@@ -1,0 +1,39 @@
+{
+  "id": "multipad_highway_3d",
+  "name": "Multipad Highway 3D",
+  "version": "0.1.0",
+  "type": "visualization",
+  "bundled": true,
+  "script": "screen.js",
+  "settings": {
+    "html": "settings.html",
+    "category": "graphics"
+  },
+  "standards": [
+    "capability-pipelines.v1",
+    "plugin-runtime-idempotent.v1"
+  ],
+  "capabilities": {
+    "visualization": {
+      "roles": [
+        "provider"
+      ],
+      "operations": [
+        "renderer.create",
+        "renderer.destroy"
+      ],
+      "emits": [
+        "renderer-ready",
+        "renderer-failed"
+      ],
+      "mode": "active",
+      "safety": "safe",
+      "description": "Provides the Multipad Highway 3D visualization renderer skeleton.",
+      "version": 1
+    }
+  },
+  "category": "practice",
+  "description": "Multipad-focused drum chart highway with a separate kick outline path.",
+  "icon": "assets/thumb.svg",
+  "license": "AGPL-3.0-only"
+}

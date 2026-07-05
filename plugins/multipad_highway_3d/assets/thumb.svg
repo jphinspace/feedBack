@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Multipad Highway 3D thumbnail">
+  <rect width="256" height="256" rx="28" fill="#101418"/>
+  <path d="M38 42h180l-18 162H56z" fill="#18212b" stroke="#334155" stroke-width="4"/>
+  <path d="M80 58 58 204M128 58v146M176 58l22 146M42 96h172M48 148h160" stroke="#475569" stroke-width="3" opacity="0.85"/>
+  <g fill="#1f2937" stroke="#38bdf8" stroke-width="4">
+    <rect x="54" y="52" width="48" height="42" rx="6"/>
+    <rect x="104" y="52" width="48" height="42" rx="6"/>
+    <rect x="154" y="52" width="48" height="42" rx="6"/>
+    <rect x="50" y="100" width="52" height="44" rx="6"/>
+    <rect x="102" y="100" width="52" height="44" rx="6"/>
+    <rect x="154" y="100" width="52" height="44" rx="6"/>
+    <rect x="46" y="150" width="56" height="48" rx="6"/>
+    <rect x="100" y="150" width="56" height="48" rx="6"/>
+    <rect x="154" y="150" width="56" height="48" rx="6"/>
+  </g>
+  <rect x="36" y="38" width="184" height="168" rx="14" fill="none" stroke="#facc15" stroke-width="6"/>
+  <circle cx="128" cy="222" r="12" fill="#facc15"/>
+</svg>
