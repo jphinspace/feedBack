@@ -3,7 +3,7 @@
   "name": "Multipad Highway 3D",
   "version": "0.1.0",
   "type": "visualization",
-  "bundled": true,
+  "bundled": false,
   "script": "screen.js",
   "settings": {
     "html": "settings.html",
@@ -28,12 +28,12 @@
       ],
       "mode": "active",
       "safety": "safe",
-      "description": "Provides the Multipad Highway 3D visualization renderer skeleton.",
+      "description": "Provides the Multipad Highway 3D WebGL visualization renderer.",
       "version": 1
     }
   },
   "category": "practice",
-  "description": "Multipad-focused drum chart highway with separate pedal indicators.",
+  "description": "Multipad-focused drum chart highway with separate pedal surfaces.",
   "icon": "assets/thumb.svg",
   "license": "AGPL-3.0-only"
 }

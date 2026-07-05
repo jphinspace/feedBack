@@ -10,9 +10,9 @@ const PLUGIN_DIR = path.join(ROOT, 'plugins', 'multipad_highway_3d');
 function loadFactoryHarness(options = {}) {
     const window = {
         console,
-        slopsmith: {},
     };
     if (options.localStorage) window.localStorage = options.localStorage;
+    if (options.standardDrumHighway) window.feedBackViz_drum_highway_3d = function () {};
     window.window = window;
     window.globalThis = window;
     const context = vm.createContext(window);
@@ -44,11 +44,11 @@ function plain(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-test('manifest declares a visualization-only bundled plugin', () => {
+test('manifest declares a visualization-only standalone plugin', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'plugin.json'), 'utf8'));
     assert.equal(manifest.id, 'multipad_highway_3d');
     assert.equal(manifest.type, 'visualization');
-    assert.equal(manifest.bundled, true);
+    assert.equal(manifest.bundled, false);
     assert.equal(manifest.script, 'screen.js');
     assert.equal(manifest.settings.html, 'settings.html');
     assert.equal(manifest.icon, 'assets/thumb.svg');
@@ -60,51 +60,43 @@ test('manifest declares a visualization-only bundled plugin', () => {
     assert.equal(manifest.capabilities['note-detection'], undefined);
 });
 
-test('factory registers with a no-op 2d renderer and no auto-claim', () => {
+test('factory registers with a WebGL renderer and drum-chart auto-claim', () => {
     const factory = loadFactory();
     assert.equal(typeof factory, 'function');
-    assert.equal(factory.contextType, '2d');
-    assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }), false);
+    assert.equal(factory.contextType, 'webgl2');
+    assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }), true);
+    assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Percussion' }), true);
+    assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Lead' }), false);
+    assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Bass' }), false);
+    assert.equal(factory.matchesArrangement({ has_drum_tab: false, arrangement: 'Drums' }), false);
     assert.equal(factory.__test.pluginId, 'multipad_highway_3d');
+    assert.equal(factory.__test.contextType, 'webgl2');
+
+    const guarded = loadFactoryHarness({ standardDrumHighway: true });
+    assert.equal(guarded.matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }), true);
 });
 
-test('renderer lifecycle clears canvas and tears down idempotently', () => {
+test('renderer lifecycle exposes WebGL state and tears down idempotently without a canvas', () => {
     const factory = loadFactory();
-    const ops = [];
-    const ctx = {
-        clearRect(x, y, w, h) {
-            ops.push(['clearRect', x, y, w, h]);
-        },
-    };
-    const canvas = {
-        width: 640,
-        height: 360,
-        clientWidth: 640,
-        clientHeight: 360,
-        getContext(type) {
-            ops.push(['getContext', type]);
-            return ctx;
-        },
-    };
-
     const renderer = factory();
-    assert.equal(renderer.contextType, '2d');
-    renderer.init(canvas, { currentTime: 0 });
+    assert.equal(renderer.contextType, 'webgl2');
+    renderer.init(null, { currentTime: 0 });
     renderer.draw({ currentTime: 1 });
     renderer.resize(320, 180);
     assert.deepEqual(JSON.parse(JSON.stringify(renderer.__probe())), {
         pluginId: 'multipad_highway_3d',
-        contextType: '2d',
-        initialized: true,
+        contextType: 'webgl2',
+        initialized: false,
+        ready: false,
         width: 320,
         height: 180,
         hasBundle: true,
+        surfaces: 0,
+        projectedHits: 0,
+        visibleNotes: 0,
     });
     renderer.destroy();
     renderer.destroy();
-
-    assert.deepEqual(ops[0], ['getContext', '2d']);
-    assert.equal(ops.filter(op => op[0] === 'clearRect').length >= 3, true);
     assert.equal(factory.__test.liveInstanceCount(), 0);
 });
 
@@ -143,22 +135,22 @@ test('default pad profile routes every known pad piece somewhere', () => {
     const routeMap = t.buildPieceToPadMap(t.DEFAULT_PAD_PROFILE);
     for (const piece of t.PAD_PIECES) {
         assert.ok(routeMap[piece], piece);
-        assert.equal(routeMap[piece].targetType, 'pad');
+        assert.equal(routeMap[piece].routeType, 'pad');
         assert.match(routeMap[piece].pad.id, /^\d+$/);
     }
     assert.equal(routeMap.kick, undefined);
     assert.equal(routeMap.hh_pedal, undefined);
 });
 
-test('external trigger profile routes off-grid pad inputs by indicator', () => {
+test('external trigger profile routes off-grid pad inputs by surface', () => {
     const t = loadFactory().__test;
     const profile = t.validateTriggerProfile({
         id: 'external-triggers',
         name: 'External snare',
         triggers: [
-            { id: 'snare-in', indicator: 'outline-left', label: 'Ext Snare', pieces: ['snare', 'kick'], color: '#A78BFA' },
-            { id: 'bad', indicator: 'outline-right', label: 'Bad', pieces: ['bogus'] },
-            { id: 'dup-indicator', indicator: 'outline-left', label: 'Dup', pieces: ['tom_hi'] },
+            { id: 'snare-in', surface: 'outline-left', label: 'Ext Snare', pieces: ['snare', 'kick'], color: '#A78BFA' },
+            { id: 'bad', surface: 'outline-right', label: 'Bad', pieces: ['bogus'] },
+            { id: 'dup-surface', surface: 'outline-left', label: 'Dup', pieces: ['tom_hi'] },
         ],
     });
 
@@ -166,8 +158,10 @@ test('external trigger profile routes off-grid pad inputs by indicator', () => {
     assert.equal(profile.name, 'External snare');
     assert.deepEqual(plain(profile.triggers.map(t => t.id)), ['snare-in']);
     assert.deepEqual(plain(profile.triggers[0].pieces), ['snare']);
-    assert.equal(profile.triggers[0].indicator, 'outline-left');
+    assert.equal(profile.triggers[0].surface, 'outline-left');
     assert.equal(profile.triggers[0].color, '#a78bfa');
+    assert.equal(t.colorHexFromCss(profile.triggers[0].color), 0xa78bfa);
+    assert.equal(t.colorHexFromCss('not-a-color'), null);
     assert.deepEqual(plain(t.DEFAULT_TRIGGER_PROFILE.triggers), []);
 
     const triggerMap = t.buildPieceToTriggerMap(profile);
@@ -183,10 +177,81 @@ test('external trigger profile routes off-grid pad inputs by indicator', () => {
 
     assert.deepEqual(plain(projected.hitEvents.map(e => e.type)), ['trigger', 'pad']);
     assert.equal(projected.hitEvents[0].triggerId, 'snare-in');
-    assert.equal(projected.hitEvents[0].indicator, 'outline-left');
+    assert.equal(projected.hitEvents[0].surfaceId, 'outline-left');
+    assert.equal(projected.hitEvents[1].surfaceId, 'pad:2');
     assert.deepEqual(plain(projected.hitGroups[0].triggerIds), ['snare-in']);
-    assert.deepEqual(plain(projected.hitGroups[0].triggerIndicators), ['outline-left']);
+    assert.deepEqual(plain(projected.hitGroups[0].triggerSurfaces), ['outline-left']);
     assert.deepEqual(plain(projected.hitGroups[0].padIds), ['2']);
+});
+
+test('external trigger profile supports external pad center and edge surfaces', () => {
+    const t = loadFactory().__test;
+    const profile = t.validateTriggerProfile({
+        id: 'external-pad-zones',
+        name: 'External pad zones',
+        triggers: [
+            { id: 'left-center', surface: 'external-left-center', label: 'Left', pieces: ['snare'], color: '#FDE68A' },
+            { id: 'left-edge', surface: 'external-left-edge', label: 'Left Edge', pieces: ['snare_xstick'], color: '#FACC15' },
+            { id: 'right-center', surface: 'external-right-center', label: 'Right', pieces: ['ride'], color: '#FDBA74' },
+            { id: 'right-edge', surface: 'external-right-edge', label: 'Right Edge', pieces: ['ride_bell'], color: '#F97316' },
+        ],
+    });
+
+    assert.deepEqual(plain(profile.triggers.map(trigger => trigger.surface)), [
+        'external-left-center',
+        'external-left-edge',
+        'external-right-center',
+        'external-right-edge',
+    ]);
+    const projected = t.projectDrumTab({
+        hits: [
+            { t: 0, p: 'snare' },
+            { t: 0.25, p: 'snare_xstick' },
+            { t: 0.50, p: 'ride' },
+            { t: 0.75, p: 'ride_bell' },
+        ],
+    }, { triggerProfile: profile });
+
+    assert.deepEqual(plain(projected.hitEvents.map(event => event.type)), ['trigger', 'trigger', 'trigger', 'trigger']);
+    assert.deepEqual(plain(projected.hitEvents.map(event => event.surfaceId)), [
+        'external-left-center',
+        'external-left-edge',
+        'external-right-center',
+        'external-right-edge',
+    ]);
+});
+
+test('surface layout renders every accepted pedal and trigger surface', () => {
+    const t = loadFactory().__test;
+    const layout = t.buildSurfaceLayout(t.DEFAULT_PAD_PROFILE);
+    const byKey = new Map(layout.surfaces.map(surface => [surface.key, surface]));
+
+    for (const surface of t.PEDAL_SURFACES.concat(t.TRIGGER_SURFACES)) {
+        assert.ok(byKey.has(surface), surface);
+    }
+
+    const leftCenter = byKey.get('external-left-center');
+    const leftEdge = byKey.get('external-left-edge');
+    const rightCenter = byKey.get('external-right-center');
+    const rightEdge = byKey.get('external-right-edge');
+    const leftOutline = byKey.get('outline-left');
+    const rightOutline = byKey.get('outline-right');
+    assert.equal(leftCenter.shape, 'circle');
+    assert.equal(leftEdge.shape, 'ring');
+    assert.equal(rightCenter.shape, 'circle');
+    assert.equal(rightEdge.shape, 'ring');
+    assert.equal(leftCenter.color, 0xfde68a);
+    assert.equal(leftEdge.color, 0xfacc15);
+    assert.equal(rightCenter.color, 0xfdba74);
+    assert.equal(rightEdge.color, 0xf97316);
+    assert.equal(leftCenter.x, leftEdge.x);
+    assert.equal(rightCenter.x, rightEdge.x);
+    assert.equal(leftCenter.x, -rightCenter.x);
+    assert.equal(leftCenter.y, rightCenter.y);
+    assert.equal(leftEdge.outerRadius - leftEdge.innerRadius >= 0.12, true);
+    assert.equal(rightEdge.outerRadius - rightEdge.innerRadius >= 0.12, true);
+    assert.equal(leftEdge.x < leftOutline.x, true);
+    assert.equal(rightEdge.x > rightOutline.x, true);
 });
 
 test('invalid pad profile dimensions reject the profile and project with the default', () => {
@@ -210,31 +275,31 @@ test('invalid pad profile dimensions reject the profile and project with the def
     assert.equal(projected.hitEvents[0].piece, 'snare');
 });
 
-test('pedal profile validation supports kick and hi-hat pedal indicators', () => {
+test('pedal profile validation supports kick and hi-hat pedal surfaces', () => {
     const t = loadFactory().__test;
     const profile = t.validatePedalProfile({
         id: 'pedals',
         name: '  Pedals  ',
         pedals: [
-            { id: 'hat-foot', indicator: 'outline-top', label: 'Hat Foot', pieces: ['hh_pedal', 'snare'], color: '#22D3EE' },
-            { id: 'kick-foot', indicator: 'outline-bottom', label: 'BD', pieces: ['kick', 'kick'], color: '#FACC15' },
-            { id: 'bad-indicator', indicator: 'outline-side', label: 'Bad', pieces: ['kick'] },
-            { id: 'dup-indicator', indicator: 'outline-top', label: 'Dup', pieces: ['kick'] },
+            { id: 'hat-foot', surface: 'outline-top', label: 'Hat Foot', pieces: ['hh_pedal', 'snare'], color: '#22D3EE' },
+            { id: 'kick-foot', surface: 'outline-bottom', label: 'BD', pieces: ['kick', 'kick'], color: '#FACC15' },
+            { id: 'bad-surface', surface: 'outline-side', label: 'Bad', pieces: ['kick'] },
+            { id: 'dup-surface', surface: 'outline-top', label: 'Dup', pieces: ['kick'] },
         ],
     });
 
     assert.equal(profile.id, 'pedals');
     assert.equal(profile.name, 'Pedals');
     assert.equal(profile.pedals.length, 2);
-    assert.deepEqual(plain(profile.pedals.map(p => p.indicator)), ['outline-top', 'outline-bottom']);
+    assert.deepEqual(plain(profile.pedals.map(p => p.surface)), ['outline-top', 'outline-bottom']);
     assert.deepEqual(plain(profile.pedals.map(p => p.pieces)), [['hh_pedal'], ['kick']]);
     assert.equal(profile.pedals[0].color, '#22d3ee');
     assert.equal(profile.pedals[1].label, 'BD');
-    assert.equal(t.validatePedalProfile({ pedals: [{ indicator: 'outline-top', pieces: ['snare'] }] }), null);
+    assert.equal(t.validatePedalProfile({ pedals: [{ surface: 'outline-top', pieces: ['snare'] }] }), null);
 
     const pedalMap = t.buildPieceToPedalMap(t.DEFAULT_PEDAL_PROFILE);
-    assert.equal(pedalMap.hh_pedal.indicator, 'outline-top');
-    assert.equal(pedalMap.kick.indicator, 'outline-bottom');
+    assert.equal(pedalMap.hh_pedal.surface, 'outline-top');
+    assert.equal(pedalMap.kick.surface, 'outline-bottom');
 });
 
 test('variant classification mirrors drum highway precedence', () => {
@@ -267,8 +332,9 @@ test('chart projection normalizes hits, sorts by time, and preserves piece ident
     assert.equal(projected.hitEvents[0].variant, 'bell');
     assert.equal(projected.hitEvents[1].variant, 'ghost');
     assert.equal(projected.hitEvents[2].open, true);
-    assert.equal(projected.hitEvents[3].indicator, 'outline-bottom');
-    assert.equal(projected.hitEvents[4].indicator, 'outline-top');
+    assert.equal(projected.hitEvents[0].surfaceId, 'pad:6');
+    assert.equal(projected.hitEvents[3].surfaceId, 'outline-bottom');
+    assert.equal(projected.hitEvents[4].surfaceId, 'outline-top');
     assert.equal(projected.hitEvents[5].velocity, 127);
 
     const hihatEvents = projected.hitEvents.filter(e => e.type === 'pad' && e.piece.startsWith('hh_'));
@@ -276,7 +342,7 @@ test('chart projection normalizes hits, sorts by time, and preserves piece ident
     assert.notEqual(hihatEvents[0].piece, hihatEvents[1].piece);
 });
 
-test('hit groups collect same-window pad hits and pedal indicator pulses', () => {
+test('hit groups collect same-window pad hits and pedal surface pulses', () => {
     const t = loadFactory().__test;
     const projected = t.projectDrumTab({
         hits: [
@@ -293,7 +359,7 @@ test('hit groups collect same-window pad hits and pedal indicator pulses', () =>
     assert.equal(projected.hitGroups[0].hasKick, true);
     assert.equal(projected.hitGroups[0].hasHiHatPedal, true);
     assert.equal(projected.hitGroups[0].padIds.length, 2);
-    assert.deepEqual(plain(projected.hitGroups[0].pedalIndicators.sort()), ['outline-bottom', 'outline-top']);
+    assert.deepEqual(plain(projected.hitGroups[0].pedalSurfaces.sort()), ['outline-bottom', 'outline-top']);
     assert.equal(projected.hitGroups[1].hitEvents[0].piece, 'ride');
     assert.equal(projected.hitEvents[0].hitGroupId, 0);
 });
