@@ -1,8 +1,10 @@
 // Multipad Highway 3D visualization plugin.
 //
-// Phase 2 skeleton: register the host visualization factory and provide a
-// clean no-op renderer lifecycle. Real pad projection and WebGL rendering land
-// in later phases from PLANNING.md.
+// Phase 3 data pipeline: validatePadProfile/validatePedalProfile/
+// validateTriggerProfile normalize the configurable surface,
+// buildPieceToPadMap/buildPieceToPedalMap/buildPieceToTriggerMap route drum
+// pieces, and projectDrumTab/groupHitEvents prepare grouped hits for the
+// upcoming 3D renderer.
 
 (function () {
     'use strict';
@@ -35,10 +37,14 @@
     /** Pieces that render through pedal indicators instead of occupying pads. */
     const PEDAL_PIECES = Object.freeze(['kick', 'hh_pedal']);
     const PEDAL_PIECE_SET = new Set(PEDAL_PIECES);
-    /** Pieces that may occupy pads. Pedal pieces are reserved for the pedal profile. */
+    /** Non-pedal pieces that may route to built-in pads or external trigger indicators. */
     const PAD_PIECES = ALL_PIECES.filter(piece => !PEDAL_PIECE_SET.has(piece));
+    /** MVP pedal indicator tokens. Phase 4 maps these to grid-outline regions. */
     const PEDAL_INDICATORS = Object.freeze(['outline-top', 'outline-bottom']);
     const PEDAL_INDICATOR_SET = new Set(PEDAL_INDICATORS);
+    /** MVP external-trigger indicator tokens for off-grid pad inputs. */
+    const TRIGGER_INDICATORS = Object.freeze(['outline-left', 'outline-right', 'symbol-left', 'symbol-right']);
+    const TRIGGER_INDICATOR_SET = new Set(TRIGGER_INDICATORS);
     /** Short display labels kept compatible with the existing drum highway. */
     const PIECE_LABELS = {
         kick: 'KICK',
@@ -59,7 +65,7 @@
         ride_bell: 'BLL',
     };
     /**
-     * MVP routing fallbacks for pieces that do not have their own pad.
+     * MVP routing fallbacks for pieces that do not have their own built-in pad.
      * These adapt the drum highway's kit fallback idea to a pad grid without
      * changing the original chart piece id.
      */
@@ -85,15 +91,15 @@
         rows: 3,
         cols: 3,
         pads: Object.freeze([
-            Object.freeze({ id: 'r0c0', row: 0, col: 0, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china']) }),
-            Object.freeze({ id: 'r0c1', row: 0, col: 1, label: 'HH', pieces: Object.freeze(['hh_closed', 'hh_open']) }),
-            Object.freeze({ id: 'r0c2', row: 0, col: 2, label: 'CRr', pieces: Object.freeze(['crash_r']) }),
-            Object.freeze({ id: 'r1c0', row: 1, col: 0, label: 'TM1', pieces: Object.freeze(['tom_hi']) }),
-            Object.freeze({ id: 'r1c1', row: 1, col: 1, label: 'TM2', pieces: Object.freeze(['tom_mid', 'tom_low']) }),
-            Object.freeze({ id: 'r1c2', row: 1, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell']) }),
-            Object.freeze({ id: 'r2c0', row: 2, col: 0, label: 'XSTK', pieces: Object.freeze(['snare_xstick']) }),
-            Object.freeze({ id: 'r2c1', row: 2, col: 1, label: 'SNR', pieces: Object.freeze(['snare']) }),
-            Object.freeze({ id: 'r2c2', row: 2, col: 2, label: 'FT', pieces: Object.freeze(['tom_floor']) }),
+            Object.freeze({ id: '1', row: 0, col: 0, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china']) }),
+            Object.freeze({ id: '2', row: 0, col: 1, label: 'HH', pieces: Object.freeze(['hh_closed', 'hh_open']) }),
+            Object.freeze({ id: '3', row: 0, col: 2, label: 'CRr', pieces: Object.freeze(['crash_r']) }),
+            Object.freeze({ id: '4', row: 1, col: 0, label: 'TM1', pieces: Object.freeze(['tom_hi']) }),
+            Object.freeze({ id: '5', row: 1, col: 1, label: 'TM2', pieces: Object.freeze(['tom_mid', 'tom_low']) }),
+            Object.freeze({ id: '6', row: 1, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell']) }),
+            Object.freeze({ id: '7', row: 2, col: 0, label: 'XSTK', pieces: Object.freeze(['snare_xstick']) }),
+            Object.freeze({ id: '8', row: 2, col: 1, label: 'SNR', pieces: Object.freeze(['snare']) }),
+            Object.freeze({ id: '9', row: 2, col: 2, label: 'FT', pieces: Object.freeze(['tom_floor']) }),
         ]),
         fallbacks: Object.freeze(Object.assign({}, PIECE_FALLBACKS)),
     });
@@ -124,10 +130,23 @@
         ]),
     });
 
+    /**
+     * Built-in external trigger profile. External pad triggers are off-grid
+     * inputs, so they render through indicators instead of occupying built-in
+     * pad cells. The generic MVP profile has no external triggers.
+     */
+    const DEFAULT_TRIGGER_PROFILE = Object.freeze({
+        version: 1,
+        id: 'generic-triggers',
+        name: 'No external pad triggers',
+        triggers: Object.freeze([]),
+    });
+
     /** Settings used by the data layer before the settings UI becomes live. */
     const DEFAULT_SETTINGS = Object.freeze({
         padProfileId: DEFAULT_PAD_PROFILE.id,
         pedalProfileId: DEFAULT_PEDAL_PROFILE.id,
+        triggerProfileId: DEFAULT_TRIGGER_PROFILE.id,
         showLabels: true,
         hitGroupWindowMs: 8,
     });
@@ -135,6 +154,7 @@
     const LS_KEYS = Object.freeze({
         padProfileId: 'multipad_h3d_pad_profile',
         pedalProfileId: 'multipad_h3d_pedal_profile',
+        triggerProfileId: 'multipad_h3d_trigger_profile',
         showLabels: 'multipad_h3d_show_labels',
         hitGroupWindowMs: 'multipad_h3d_hit_group_window_ms',
     });
@@ -155,9 +175,9 @@
     }
 
     /**
-     * Sanitize id-like fields owned by pad/pedal profile data.
+     * Sanitize id-like fields owned by profile data.
      *
-     * This is for `profile.id`, `pad.id`, and `pedal.id`.
+     * This is for `profile.id`, `pad.id`, `pedal.id`, and external `trigger.id`.
      * Drum piece ids are not sanitized through this path; they are accepted
      * only when they match the canonical `PIECE_SET`.
      *
@@ -174,10 +194,11 @@
     /**
      * Sanitize short human-facing text supplied by profile data.
      *
-     * This is for profile names plus pad/pedal labels. Hit labels are generated
-     * from canonical piece labels during projection, not accepted from chart data.
+     * This is for profile names plus pad/pedal/trigger labels. Hit labels are
+     * generated from canonical piece labels during projection, not accepted
+     * from chart data.
      *
-     * @param {*} value - Candidate profile name or pad/pedal label.
+     * @param {*} value - Candidate profile name or pad/pedal/trigger label.
      * @param {string} fallback - Text used when the candidate is empty/invalid.
      * @returns {string}
      */
@@ -233,14 +254,35 @@
     }
 
     /**
+     * Return a mutable copy of an external pad trigger profile.
+     *
+     * @param {object} profile - Validated trigger profile.
+     * @returns {object}
+     */
+    function cloneTriggerProfile(profile) {
+        return {
+            version: 1,
+            id: profile.id,
+            name: profile.name,
+            triggers: profile.triggers.map(trigger => ({
+                id: trigger.id,
+                indicator: trigger.indicator,
+                label: trigger.label,
+                pieces: trigger.pieces.slice(),
+                color: trigger.color,
+            })),
+        };
+    }
+
+    /**
      * Validate and normalize a pad layout.
      *
      * The profile accepts explicit m x n layouts and drum piece ids, but rejects
-     * pedal pieces because the pedal profile owns their outline rendering.
+     * pedal pieces because the pedal profile owns pedal indicator rendering.
      * Invalid top-level dimensions reject the whole profile so the caller can
      * fall back to the known-good default instead of guessing.
-     * Unknown pieces, duplicate pad coordinates, duplicate piece assignments,
-     * and out-of-bounds pads are dropped instead of throwing.
+     * Unknown pieces, duplicate pad coordinates, duplicate pad ids, duplicate
+     * piece assignments, and out-of-bounds pads are dropped instead of throwing.
      *
      * @param {*} raw - Untrusted profile-like data.
      * @returns {object|null} Normalized profile or null when unusable.
@@ -256,6 +298,7 @@
 
         const pads = [];
         const occupied = new Set();
+        const usedPadIds = new Set();
         const assignedPieces = new Set();
         for (let i = 0; i < rawPads.length; i++) {
             const pad = rawPads[i];
@@ -266,6 +309,9 @@
             if (row < 0 || row >= rows || col < 0 || col >= cols) continue;
             const coordKey = row + ':' + col;
             if (occupied.has(coordKey)) continue;
+            const defaultId = String(row * cols + col + 1);
+            const padId = sanitizeProfileId(pad.id, defaultId);
+            if (usedPadIds.has(padId)) continue;
 
             const pieces = [];
             const rawPieces = Array.isArray(pad.pieces) ? pad.pieces : [];
@@ -279,9 +325,9 @@
             if (pieces.length === 0) continue;
 
             occupied.add(coordKey);
-            const defaultId = 'r' + row + 'c' + col;
+            usedPadIds.add(padId);
             pads.push({
-                id: sanitizeProfileId(pad.id, defaultId),
+                id: padId,
                 row,
                 col,
                 label: sanitizeProfileDisplayText(pad.label, PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()),
@@ -313,9 +359,9 @@
     /**
      * Validate and normalize the pedal profile.
      *
-     * MVP supports kick and hi-hat pedal as separate indicators. Keeping
-     * this separate from pads lets later profiles add pedals/footswitches
-     * without changing the pad layout schema.
+     * MVP supports kick and hi-hat pedal as separate indicators. Keeping this
+     * separate from pads lets later profiles change foot controls without
+     * changing the built-in pad layout schema.
      *
      * @param {*} raw - Untrusted profile-like data.
      * @returns {object|null} Normalized pedal profile or null when unusable.
@@ -368,6 +414,68 @@
     }
 
     /**
+     * Validate and normalize the external pad trigger profile.
+     *
+     * These are off-grid pad inputs such as a plugged-in snare pad. They use
+     * indicator tokens like pedals do, but accept only pad pieces.
+     *
+     * @param {*} raw - Untrusted profile-like data.
+     * @returns {object|null} Normalized trigger profile or null when unusable.
+     */
+    function validateTriggerProfile(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        const rawTriggers = Array.isArray(raw.triggers) ? raw.triggers : null;
+        if (!rawTriggers) return null;
+
+        const triggers = [];
+        const assignedPieces = new Set();
+        const occupiedIndicators = new Set();
+        const usedTriggerIds = new Set();
+        for (let i = 0; i < rawTriggers.length; i++) {
+            const trigger = rawTriggers[i];
+            if (!trigger || typeof trigger !== 'object') continue;
+            const indicator = typeof trigger.indicator === 'string' ? trigger.indicator.trim() : '';
+            if (!TRIGGER_INDICATOR_SET.has(indicator)) continue;
+            if (occupiedIndicators.has(indicator)) continue;
+
+            const defaultId = 'trigger-' + (triggers.length + 1);
+            const triggerId = sanitizeProfileId(trigger.id, defaultId);
+            if (usedTriggerIds.has(triggerId)) continue;
+
+            const pieces = [];
+            const rawPieces = Array.isArray(trigger.pieces) ? trigger.pieces : [];
+            for (const piece of rawPieces) {
+                if (PEDAL_PIECE_SET.has(piece)) continue;
+                if (!PIECE_SET.has(piece)) continue;
+                if (assignedPieces.has(piece)) continue;
+                assignedPieces.add(piece);
+                pieces.push(piece);
+            }
+            if (pieces.length === 0) continue;
+
+            occupiedIndicators.add(indicator);
+            usedTriggerIds.add(triggerId);
+            const color = typeof trigger.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(trigger.color)
+                ? trigger.color.toLowerCase()
+                : '#a78bfa';
+            triggers.push({
+                id: triggerId,
+                indicator,
+                label: sanitizeProfileDisplayText(trigger.label, PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()),
+                pieces,
+                color,
+            });
+        }
+
+        return {
+            version: 1,
+            id: sanitizeProfileId(raw.id, DEFAULT_TRIGGER_PROFILE.id),
+            name: sanitizeProfileDisplayText(raw.name, 'Custom external triggers'),
+            triggers,
+        };
+    }
+
+    /**
      * Safely read localStorage. Browsers may throw when storage is blocked, and
      * the VM tests provide no storage at all.
      *
@@ -414,6 +522,8 @@
         if (padProfileId === DEFAULT_PAD_PROFILE.id) settings.padProfileId = padProfileId;
         const pedalProfileId = readStorageValue(LS_KEYS.pedalProfileId);
         if (pedalProfileId === DEFAULT_PEDAL_PROFILE.id) settings.pedalProfileId = pedalProfileId;
+        const triggerProfileId = readStorageValue(LS_KEYS.triggerProfileId);
+        if (triggerProfileId === DEFAULT_TRIGGER_PROFILE.id) settings.triggerProfileId = triggerProfileId;
 
         const showLabels = readStorageValue(LS_KEYS.showLabels);
         if (showLabels === '1' || showLabels === 'true') settings.showLabels = true;
@@ -438,6 +548,7 @@
         if (!Object.prototype.hasOwnProperty.call(LS_KEYS, key)) return;
         if (key === 'padProfileId' && value !== DEFAULT_PAD_PROFILE.id) return;
         if (key === 'pedalProfileId' && value !== DEFAULT_PEDAL_PROFILE.id) return;
+        if (key === 'triggerProfileId' && value !== DEFAULT_TRIGGER_PROFILE.id) return;
         if (key === 'showLabels') {
             writeStorageValue(LS_KEYS[key], value ? '1' : '0');
             return;
@@ -457,26 +568,43 @@
      * honest while sharing a pad for pieces such as open/closed hi-hat.
      *
      * @param {object} padProfile - Validated or raw pad profile.
-     * @returns {object} Map of piece id to { pad, routedPiece }.
+     * @returns {object} Map of piece id to { targetType, pad, routedPiece }.
      */
     function buildPieceToPadMap(padProfile) {
         const profile = validatePadProfile(padProfile) || clonePadProfile(DEFAULT_PAD_PROFILE);
         const direct = Object.create(null);
         for (const pad of profile.pads) {
             for (const piece of pad.pieces) {
-                direct[piece] = pad;
+                direct[piece] = { targetType: 'pad', pad };
             }
         }
 
         const routed = Object.create(null);
         for (const piece of PAD_PIECES) {
             if (direct[piece]) {
-                routed[piece] = { pad: direct[piece], routedPiece: piece };
+                routed[piece] = Object.assign({ routedPiece: piece }, direct[piece]);
                 continue;
             }
             const fallback = profile.fallbacks[piece] || PIECE_FALLBACKS[piece];
             if (fallback && direct[fallback]) {
-                routed[piece] = { pad: direct[fallback], routedPiece: fallback };
+                routed[piece] = Object.assign({ routedPiece: fallback }, direct[fallback]);
+            }
+        }
+        return routed;
+    }
+
+    /**
+     * Build piece -> external trigger indicator routing for a trigger profile.
+     *
+     * @param {object} triggerProfile - Validated or raw trigger profile.
+     * @returns {object} Map of piece id to trigger descriptor.
+     */
+    function buildPieceToTriggerMap(triggerProfile) {
+        const profile = validateTriggerProfile(triggerProfile) || cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE);
+        const routed = Object.create(null);
+        for (const trigger of profile.triggers) {
+            for (const piece of trigger.pieces) {
+                routed[piece] = trigger;
             }
         }
         return routed;
@@ -519,7 +647,7 @@
      *
      * Invalid or unknown future pieces return null. Velocity is clamped, and
      * open hi-hat remains a distinct piece even if it later routes to the same
-     * pad as closed hi-hat.
+     * pad, trigger, or fallback target as closed hi-hat.
      *
      * @param {*} hit - Raw drum-tab hit.
      * @returns {object|null}
@@ -544,8 +672,8 @@
     /**
      * Group hit events that occur in the same timing window.
      *
-     * A hit group can include multiple pads and pedal indicators. Hit events
-     * are annotated with `hitGroupId` for render-time effects.
+     * A hit group can include multiple pads, external triggers, and pedal
+     * indicators. Hit events are annotated with `hitGroupId` for render-time FX.
      *
      * @param {Array<object>} hitEvents - Projected hit events.
      * @param {number} windowSec - Same-time tolerance in seconds.
@@ -563,6 +691,8 @@
                     t: hitEvent.t,
                     hitEvents: [],
                     padIds: [],
+                    triggerIds: [],
+                    triggerIndicators: [],
                     pedalIndicators: [],
                     hasKick: false,
                     hasHiHatPedal: false,
@@ -581,6 +711,12 @@
             if (hitEvent.type === 'pad' && !group.padIds.includes(hitEvent.padId)) {
                 group.padIds.push(hitEvent.padId);
             }
+            if (hitEvent.type === 'trigger' && !group.triggerIds.includes(hitEvent.triggerId)) {
+                group.triggerIds.push(hitEvent.triggerId);
+            }
+            if (hitEvent.type === 'trigger' && hitEvent.indicator && !group.triggerIndicators.includes(hitEvent.indicator)) {
+                group.triggerIndicators.push(hitEvent.indicator);
+            }
         }
         return groups;
     }
@@ -589,22 +725,25 @@
      * Project a drum tab into multipad hit events.
      *
      * This is the Phase 3 bridge from host chart data to renderer-ready data:
-     * hits become pad events or pedal indicator events, sorted by time and
-     * grouped for simultaneous-hit FX. It does no DOM/WebGL work.
+     * hits become pad, external-trigger, or pedal indicator events, sorted by
+     * time and grouped for simultaneous-hit FX. It does no DOM/WebGL work.
      *
      * @param {object} drumTab - Bundle drum tab object with a `hits` array.
      * @param {object} [options]
      * @param {object} [options.padProfile] - Optional pad profile.
      * @param {object} [options.pedalProfile] - Optional pedal profile.
+     * @param {object} [options.triggerProfile] - Optional external trigger profile.
      * @param {number} [options.hitGroupWindowSec] - Grouping tolerance.
-     * @returns {{padProfile: object, pedalProfile: object, hitEvents: Array<object>, hitGroups: Array<object>}}
+     * @returns {{padProfile: object, pedalProfile: object, triggerProfile: object, hitEvents: Array<object>, hitGroups: Array<object>}}
      */
     function projectDrumTab(drumTab, options) {
         const opts = options && typeof options === 'object' ? options : {};
         const padProfile = validatePadProfile(opts.padProfile) || clonePadProfile(DEFAULT_PAD_PROFILE);
         const pedalProfile = validatePedalProfile(opts.pedalProfile) || clonePedalProfile(DEFAULT_PEDAL_PROFILE);
+        const triggerProfile = validateTriggerProfile(opts.triggerProfile) || cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE);
         const pieceToPad = buildPieceToPadMap(padProfile);
         const pieceToPedal = buildPieceToPedalMap(pedalProfile);
+        const pieceToTrigger = buildPieceToTriggerMap(triggerProfile);
         const hitGroupWindowSec = clampNumber(
             opts.hitGroupWindowSec,
             0,
@@ -635,6 +774,24 @@
                 });
                 continue;
             }
+            const trigger = pieceToTrigger[hit.piece];
+            if (trigger) {
+                hitEvents.push({
+                    type: 'trigger',
+                    triggerId: trigger.id,
+                    indicator: trigger.indicator,
+                    label: PIECE_LABELS[hit.piece] || trigger.label,
+                    triggerLabel: trigger.label,
+                    color: trigger.color,
+                    t: hit.t,
+                    piece: hit.piece,
+                    routedPiece: hit.piece,
+                    velocity: hit.velocity,
+                    variant: hit.variant,
+                    open: hit.open,
+                });
+                continue;
+            }
             const route = pieceToPad[hit.piece];
             if (!route) continue;
             hitEvents.push({
@@ -658,6 +815,7 @@
         return {
             padProfile,
             pedalProfile,
+            triggerProfile,
             hitEvents,
             hitGroups,
         };
@@ -768,16 +926,20 @@
         PAD_PIECES: PAD_PIECES.slice(),
         PEDAL_PIECES: PEDAL_PIECES.slice(),
         PEDAL_INDICATORS: PEDAL_INDICATORS.slice(),
+        TRIGGER_INDICATORS: TRIGGER_INDICATORS.slice(),
         PIECE_LABELS: Object.assign({}, PIECE_LABELS),
         DEFAULT_PAD_PROFILE: clonePadProfile(DEFAULT_PAD_PROFILE),
         DEFAULT_PEDAL_PROFILE: clonePedalProfile(DEFAULT_PEDAL_PROFILE),
+        DEFAULT_TRIGGER_PROFILE: cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE),
         DEFAULT_SETTINGS: Object.assign({}, DEFAULT_SETTINGS),
         validatePadProfile,
         validatePedalProfile,
+        validateTriggerProfile,
         readSettings,
         writeSetting,
         buildPieceToPadMap,
         buildPieceToPedalMap,
+        buildPieceToTriggerMap,
         hitVariant,
         normalizeHit,
         groupHitEvents,

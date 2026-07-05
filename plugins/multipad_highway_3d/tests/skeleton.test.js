@@ -7,11 +7,12 @@ const vm = require('node:vm');
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const PLUGIN_DIR = path.join(ROOT, 'plugins', 'multipad_highway_3d');
 
-function loadFactory() {
+function loadFactoryHarness(options = {}) {
     const window = {
         console,
         slopsmith: {},
     };
+    if (options.localStorage) window.localStorage = options.localStorage;
     window.window = window;
     window.globalThis = window;
     const context = vm.createContext(window);
@@ -20,11 +21,13 @@ function loadFactory() {
     return window.feedBackViz_multipad_highway_3d;
 }
 
+function loadFactory() {
+    return loadFactoryHarness();
+}
+
 function loadFactoryWithStorage(entries = {}) {
     const store = new Map(Object.entries(entries));
-    const window = {
-        console,
-        slopsmith: {},
+    const factory = loadFactoryHarness({
         localStorage: {
             getItem(key) {
                 return store.has(key) ? store.get(key) : null;
@@ -33,13 +36,8 @@ function loadFactoryWithStorage(entries = {}) {
                 store.set(key, String(value));
             },
         },
-    };
-    window.window = window;
-    window.globalThis = window;
-    const context = vm.createContext(window);
-    const src = fs.readFileSync(path.join(PLUGIN_DIR, 'screen.js'), 'utf8');
-    vm.runInContext(src, context, { filename: 'screen.js' });
-    return { factory: window.feedBackViz_multipad_highway_3d, store };
+    });
+    return { factory, store };
 }
 
 function plain(value) {
@@ -120,13 +118,12 @@ test('pad profile validation accepts m x n layouts and strips invalid entries', 
         pads: [
             { row: 0, col: 0, label: 'A', pieces: ['kick', 'snare', 'bogus'] },
             { row: 0, col: 0, label: 'dup coordinate', pieces: ['tom_hi'] },
+            { id: 'dup-pad', row: 0, col: 1, label: 'dup id first', pieces: ['tom_hi'] },
+            { id: 'dup-pad', row: 0, col: 2, label: 'dup id second', pieces: ['tom_mid'] },
             { row: 0, col: 1, label: 'B', pieces: ['tom_hi', 'snare'] },
             { row: 9, col: 9, pieces: ['ride'] },
         ],
-        fallbacks: {
-            tom_low: 'tom_hi',
-            __proto__: 'snare',
-        },
+        fallbacks: JSON.parse('{"tom_low":"tom_hi","__proto__":"snare"}'),
     });
 
     assert.equal(profile.id, 'yamaha-4x3');
@@ -136,6 +133,7 @@ test('pad profile validation accepts m x n layouts and strips invalid entries', 
     assert.equal(profile.pads.length, 2);
     assert.deepEqual(plain(profile.pads[0].pieces), ['snare']);
     assert.deepEqual(plain(profile.pads[1].pieces), ['tom_hi']);
+    assert.deepEqual(plain(profile.pads.map(p => p.id)), ['1', 'dup-pad']);
     assert.equal(profile.fallbacks.tom_low, 'tom_hi');
     assert.equal({}.polluted, undefined);
 });
@@ -145,10 +143,50 @@ test('default pad profile routes every known pad piece somewhere', () => {
     const routeMap = t.buildPieceToPadMap(t.DEFAULT_PAD_PROFILE);
     for (const piece of t.PAD_PIECES) {
         assert.ok(routeMap[piece], piece);
-        assert.equal(routeMap[piece].pad.id.startsWith('r'), true);
+        assert.equal(routeMap[piece].targetType, 'pad');
+        assert.match(routeMap[piece].pad.id, /^\d+$/);
     }
     assert.equal(routeMap.kick, undefined);
     assert.equal(routeMap.hh_pedal, undefined);
+});
+
+test('external trigger profile routes off-grid pad inputs by indicator', () => {
+    const t = loadFactory().__test;
+    const profile = t.validateTriggerProfile({
+        id: 'external-triggers',
+        name: 'External snare',
+        triggers: [
+            { id: 'snare-in', indicator: 'outline-left', label: 'Ext Snare', pieces: ['snare', 'kick'], color: '#A78BFA' },
+            { id: 'bad', indicator: 'outline-right', label: 'Bad', pieces: ['bogus'] },
+            { id: 'dup-indicator', indicator: 'outline-left', label: 'Dup', pieces: ['tom_hi'] },
+        ],
+    });
+
+    assert.equal(profile.id, 'external-triggers');
+    assert.equal(profile.name, 'External snare');
+    assert.deepEqual(plain(profile.triggers.map(t => t.id)), ['snare-in']);
+    assert.deepEqual(plain(profile.triggers[0].pieces), ['snare']);
+    assert.equal(profile.triggers[0].indicator, 'outline-left');
+    assert.equal(profile.triggers[0].color, '#a78bfa');
+    assert.deepEqual(plain(t.DEFAULT_TRIGGER_PROFILE.triggers), []);
+
+    const triggerMap = t.buildPieceToTriggerMap(profile);
+    assert.equal(triggerMap.snare.id, 'snare-in');
+    assert.equal(triggerMap.kick, undefined);
+
+    const projected = t.projectDrumTab({
+        hits: [
+            { t: 0, p: 'snare' },
+            { t: 0.004, p: 'hh_closed' },
+        ],
+    }, { triggerProfile: profile, hitGroupWindowSec: 0.008 });
+
+    assert.deepEqual(plain(projected.hitEvents.map(e => e.type)), ['trigger', 'pad']);
+    assert.equal(projected.hitEvents[0].triggerId, 'snare-in');
+    assert.equal(projected.hitEvents[0].indicator, 'outline-left');
+    assert.deepEqual(plain(projected.hitGroups[0].triggerIds), ['snare-in']);
+    assert.deepEqual(plain(projected.hitGroups[0].triggerIndicators), ['outline-left']);
+    assert.deepEqual(plain(projected.hitGroups[0].padIds), ['2']);
 });
 
 test('invalid pad profile dimensions reject the profile and project with the default', () => {
@@ -324,12 +362,14 @@ test('settings survive missing and corrupt localStorage', () => {
     const { factory, store } = loadFactoryWithStorage({
         multipad_h3d_pad_profile: 'unknown',
         multipad_h3d_pedal_profile: 'generic-pedals',
+        multipad_h3d_trigger_profile: 'generic-triggers',
         multipad_h3d_show_labels: '0',
         multipad_h3d_hit_group_window_ms: '999',
     });
     const settings = factory.__test.readSettings();
     assert.equal(settings.padProfileId, 'generic-3x3');
     assert.equal(settings.pedalProfileId, 'generic-pedals');
+    assert.equal(settings.triggerProfileId, 'generic-triggers');
     assert.equal(settings.showLabels, false);
     assert.equal(settings.hitGroupWindowMs, 50);
 

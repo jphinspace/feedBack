@@ -6,18 +6,23 @@ multipad layout instead of a single horizontal lane row. Hi-hat pedal and kick
 hits are reserved for a separate pedal profile and will render as top and
 bottom pedal indicators.
 
-This directory currently contains the Phase 2 skeleton from `PLANNING.md`:
+This directory currently contains the Phase 3 data/projection surface from
+`PLANNING.md`:
 
 - `plugin.json` declares a visualization provider only.
-- `screen.js` registers `window.feedBackViz_multipad_highway_3d` and returns a
-  clean no-op renderer with `init`, `draw`, `resize`, and `destroy`.
+- `screen.js` registers `window.feedBackViz_multipad_highway_3d`, implements the
+  host renderer lifecycle, and exposes tested pure helpers through `__test`.
+- `screen.js` validates pad and pedal profiles, routes drum-tab hits through
+  `projectDrumTab`, preserves drum piece identity while applying pad/pedal
+  fallbacks, classifies hit variants, groups same-window hits, and reads/writes
+  localStorage-backed settings safely.
 - `settings.html` loads the plugin settings panel without depending on MIDI,
   WebGL, or runtime Tailwind.
 - `assets/thumb.svg` provides the picker thumbnail.
 
-The skeleton does not auto-claim arrangements yet. Auto mode will stay with
-the existing drum, guitar, bass, and keys visualizers until the multipad data
-projection and renderer phases are implemented.
+Auto mode does not claim arrangements yet. It will stay with the existing drum,
+guitar, bass, and keys visualizers until the multipad renderer is visible and
+useful.
 
 ## Layout Direction
 

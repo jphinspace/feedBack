@@ -51,31 +51,35 @@ Plan for both v2 and v3 UI behavior. The renderer itself should work unchanged i
 
 Keep contribution and release hygiene in view. The main FeedBack repo asks plugin contributors to use AGPL-compatible licensing for curated plugins, keep diagnostics redaction-safe, document hardware assumptions, and add tests that protect the renderer contract, capability declarations, routing, and performance-sensitive behavior.
 
+Plan for standalone release from the beginning. During development this plugin lives under `feedBack/plugins/multipad_highway_3d` for convenience, but V1 should ship from its own repository following the existing `got-feedBack/feedBack-plugin-*` pattern used by repos such as `feedBack-plugin-editor`, `feedBack-plugin-drums`, and `feedBack-plugin-keys-highway-3d`. The intended release repository name is `got-feedBack/feedBack-plugin-multipad-highway-3d`, matching the existing `feedBack-plugin-keys-highway-3d` naming pattern, so keep code, docs, assets, tests, licensing, and version metadata portable enough to break out cleanly instead of depending on private paths or unrelated main-repo state.
+
 ## 2. Components Needed for `multipad_highway_3d`
 
 `plugin.json` manifest: Declares `id: "multipad_highway_3d"`, user-facing name, version, visualization type, bundled status if promoted, script/settings/assets, category, description, icon, standards, and capability metadata. MVP capability metadata should only claim `visualization` provider behavior. Add `midi-input` or `note-detection` only in later work if this plugin takes ownership of input/scoring behavior instead of simply visualizing the same drum data used by `drum_highway_3d`.
 
 Renderer factory and lifecycle: A `screen.js` factory registered as `window.feedBackViz_multipad_highway_3d`. It owns Three.js scene setup, canvas sizing, chart rendering, settings application, teardown, and test hooks. It should mirror the host contract used by `highway_3d`, `drum_highway_3d`, and `keys_highway_3d`, and should reuse existing 3D highway/tunnel behavior wherever practical.
 
-Pad profile model: A pad-layout model mapped from the same drum piece vocabulary and kit-routing assumptions used by `drum_highway_3d`. The MVP default is a generic 3x3 layout, but the model should remain suitable for other m x n multipad shapes. This should not introduce a new MIDI or chart schema in the MVP. The profile's job is to decide how existing drum pieces appear on the pad grid. Like `drum_highway_3d` kits, pad profiles should remain configurable later: users should be able to choose which pieces are directly represented and which compatible pieces fall back to those surfaces.
+Pad profile model: A pad-layout model mapped from the same drum piece vocabulary and kit-routing assumptions used by `drum_highway_3d`. The MVP default is a generic 3x3 layout, but the model should remain suitable for other m x n multipad shapes. Built-in on-unit pads live in `pads`; external pad triggers do not belong in the pad profile because they are off-grid inputs with their own UI. This should not introduce a new MIDI or chart schema in the MVP. The profile's job is to decide how existing drum pieces appear on the built-in pad grid. Like `drum_highway_3d` kits, pad profiles should remain configurable later: users should be able to choose which pieces are directly represented and which compatible pieces fall back to those surfaces.
 
 Pedal profile model: A separate profile for pedals, shaped like the pad profile with a `pedals` list. The MVP default should map `hh_pedal` to `indicator: "outline-top"` and `kick` to `indicator: "outline-bottom"`; both are pedal indicators on the active pad grid rather than pads. Secondary footswitches and controller-specific pedal inputs can remain future extensions.
 
+External trigger profile model: A separate profile for optional external pad triggers, shaped like the pedal profile with a `triggers` list. The MVP default should be `generic-triggers` with an empty trigger list. Hardware-specific or user-configured profiles can map pieces such as `snare` to off-grid trigger indicators like `indicator: "outline-left"` without changing the built-in pad grid.
+
 Pad geometry and coordinate map: Converts a pad profile into 3D landing zones, labels, hit regions, lighting zones, and camera framing. The highway/tunnel depth should match the existing 3D highways; unlike `drum_highway_3d`, only the front target area should read as a pad-controller grid instead of a linear row of lanes. The MVP pedal visualization should use top and bottom grid-outline indicators; later profiles may add other indicator styles only if they do not compromise the matrix-highway read.
 
-Chart-to-pad routing layer: Converts `bundle.drumTab.hits` into scheduled hit events by reusing the same canonical drum piece ids, labels, default kit routing, fallbacks, and MIDI assumptions already present in `drum_highway_3d`. It should not invent new ids such as mockup pad names. For the MVP, pad pieces that `drum_highway_3d` already understands are displayed on the active pad grid, while `hh_pedal` and `kick` are displayed through the pedal profile as indicator events. Keep the routing logic as close to `drum_highway_3d` as possible: direct profile assignments win, profile fallbacks cover missing compatible pieces, and hits with no direct or fallback route fail soft rather than inventing a new target.
+Chart-to-pad routing layer: Converts `bundle.drumTab.hits` into scheduled hit events by reusing the same canonical drum piece ids, labels, default kit routing, fallbacks, and MIDI assumptions already present in `drum_highway_3d`. It should not invent new ids such as mockup pad names. For the MVP, pad pieces that `drum_highway_3d` already understands are displayed on the active pad grid unless an external trigger profile explicitly routes a piece to an off-grid trigger indicator, while `hh_pedal` and `kick` are displayed through the pedal profile as indicator events. Keep the routing logic as close to `drum_highway_3d` as possible: direct profile assignments win, profile fallbacks cover missing compatible pieces, and hits with no direct or fallback route fail soft rather than inventing a new target.
 
 MIDI input/session layer, post-MVP only: If this plugin later needs its own input path, use `window.slopsmith.midiInput` through the core `midi-input` capability and mirror `drum_highway_3d` behavior. The MVP should not add new MIDI session handling.
 
 MIDI-to-pad mapping layer, post-MVP only: Prefer the same MIDI-to-piece mapping used by `drum_highway_3d` if/when input is added. Do not create a new pad-note schema for the MVP. Input should resolve MIDI note -> drum piece -> active pad/pedal route, using the same profile fallback rules as chart projection.
 
-Hit detection and scoring layer, post-MVP only: If this plugin later scores input, match `drum_highway_3d` behavior and timing windows. Scoring should compare the routed target, not the raw MIDI note or original piece id: pad hits match by `padId`, pedal hits match by pedal indicator/pedal target, and both chart hits and MIDI input should pass through the same piece-to-target routing first. The MVP should focus on UI/visualization and not claim or implement note detection.
+Hit detection and scoring layer, post-MVP only: If this plugin later scores input, match `drum_highway_3d` behavior and timing windows. Scoring should compare the routed target, not the raw MIDI note or original piece id: pad hits match by `padId`, external trigger hits match by `triggerId`, pedal hits match by pedal indicator/pedal target, and both chart hits and MIDI input should pass through the same piece-to-target routing first. The MVP should focus on UI/visualization and not claim or implement note detection.
 
 Hit event and FX layer: Renders approaching notes, pad landing flashes, timing colors, sparks, combo feedback, ghost/accent/flam shapes, pedal indicator pulses, hit group cues for same-time hits, and optional audio-reactive ambience. This layer should borrow stable shared helpers from `drum_highway_3d` and `highway_3d` whenever the behavior matches; do not clone-and-fork helper code unless the multipad target plane actually needs different behavior.
 
 Optional drum synth/audio feedback layer: Provides local audible pad feedback, probably by reusing the WebAudioFont drum-kit approach from the drum plugins. It must be optional and volume-controlled because the song audio remains the primary playback path.
 
-Settings UI: A `settings.html` panel for pad profile selection, pedal profile selection, per-piece/per-pad display labels or colors if needed, camera/graphics options, and hit feedback intensity. MIDI device selection, learn mode, synth volume, and scoring controls should wait until input/scoring moves into scope.
+Settings UI: A `settings.html` panel for pad profile selection, pedal profile selection, external trigger profile selection, per-piece/per-pad display labels or colors if needed, camera/graphics options, and hit feedback intensity. MIDI device selection, learn mode, synth volume, and scoring controls should wait until input/scoring moves into scope.
 
 Test and diagnostics hooks: A small `__test` export for pure data helpers and a `window.__multipadH3dTest` hook for browser tests to inject synthetic hit events, inspect projection state, and probe effects without physical hardware.
 
@@ -95,7 +99,7 @@ Pedal profile model depends on the same drum piece vocabulary and the active set
 
 Pad geometry and coordinate map depends on the active pad profile and settings. The renderer, chart routing, hit feedback, and settings preview all depend on this coordinate map.
 
-Chart-to-pad routing depends on `bundle.drumTab`, `drum_highway_3d`-compatible piece routing, the active pad profile, the active pedal profile, and the hit variant parser. In the MVP it feeds rendering only. The multipad default may expose more pieces directly than the 7-lane drum highway because it starts with a 3x3 grid plus two pedal indicators, but the fallback semantics should remain the same.
+Chart-to-pad routing depends on `bundle.drumTab`, `drum_highway_3d`-compatible piece routing, the active pad profile, the active pedal profile, the active external trigger profile, and the hit variant parser. In the MVP it feeds rendering only. The multipad default may expose more pieces directly than the 7-lane drum highway because it starts with a 3x3 grid plus two pedal indicators, but the fallback semantics should remain the same.
 
 MIDI input/session is post-MVP. If added later, it depends on the core `midi-input` domain and should mirror `drum_highway_3d`.
 
@@ -117,7 +121,7 @@ Recommended build order is: manifest plan, pad/pedal profile helpers, chart-to-p
 
 Manifest and loader tests: Add a manifest contract test once `plugin.json` exists. Verify capability metadata passes `docs/plugin-manifest.schema.json`, declares only implemented domains, exposes category/description/icon metadata, and remains loadable when optional domains are absent.
 
-Pure data tests: VM-load `screen.js` without DOM, localStorage, WebGL, MIDI, or audio. Test pad profile validation, pedal profile validation, `drum_highway_3d`-compatible piece routing, hit normalization, hit variant precedence, hit group grouping, and malformed input handling.
+Pure data tests: VM-load `screen.js` without DOM, localStorage, WebGL, MIDI, or audio. Test pad profile validation, pedal profile validation, external trigger profile validation, `drum_highway_3d`-compatible piece routing, hit normalization, hit variant precedence, hit group grouping, and malformed input handling.
 
 Drum vocabulary integration tests: Reuse expectations from `tests/test_drums_lib.py`: known pieces route somewhere, unknown future pieces fail soft, open/closed hi-hat remain distinct, velocities are clamped/ignored safely, and hits are sorted by time.
 
@@ -146,10 +150,11 @@ Phase 1 output (locked):
 - MVP visual shape: an abstract 3x3 performance grid with a front-facing hit plane and per-pad tunnels extending backward. The renderer should preserve the rectangular pad read at the play surface; perspective belongs behind the pads, not as distortion of the target grid. The receding highway/tunnel portion should match `drum_highway_3d` and `highway_3d`; only the target plane and pedal indicator behavior are new.
 - Default pad profile: generic 3x3 pad. It is not Alesis-specific and should work for any controller that can be treated as nine pads.
 - Default pedal profile: generic pedals. Pedals are separate from the pad profile so pedal behavior can be changed later without redefining the pad grid.
+- Default external trigger profile: generic empty trigger profile. External pad triggers are separate from the pad profile because they are off-grid inputs with their own indicator UI.
 - Pedal behavior: `hh_pedal` hits use `indicator: "outline-top"`, and `kick` hits use `indicator: "outline-bottom"`. They do not consume pads and do not use separate off-grid lanes in the MVP.
 - Same-time events: simultaneous drum hits are called `hit groups`. A hit group may light multiple pads plus one or more pedal indicators in the same scoring window.
 - Default routing behavior: the generic 3x3 + two-pedal default may route more canonical pieces directly than `drum_highway_3d`'s 7-lane default, but it should use the same fallback philosophy. Direct assignments win; missing compatible pieces may fall back using the same kit assumptions; unknown or unsupported pieces are skipped without changing the chart vocabulary.
-- Tracking/packaging: unignore the full `plugins/multipad_highway_3d` directory so the planning doc, mockup asset, and future implementation files can be checked in normally.
+- Tracking/packaging: unignore the full `plugins/multipad_highway_3d` directory so the planning doc, mockup asset, and future implementation files can be checked in normally during in-tree development. Treat this directory as staging for the eventual standalone `got-feedBack/feedBack-plugin-multipad-highway-3d` repository, not as the final V1 release location.
 - First shippable MVP capabilities: claim only `visualization` as a provider. Do not claim `midi-input` or `note-detection` for the MVP. Do not add routes for the MVP.
 - Schema decision: no new profile schema is necessary for the MVP. The MIDI notes, drum pieces, kit configuration, labels, variants, and fallbacks should match the concepts already used by `drum_highway_3d`; this plugin's first job is to display the same drum data differently.
 
@@ -164,11 +169,11 @@ MVP visual projection rules:
 
 Phase 2: Add the plugin skeleton. Create `plugin.json`, `screen.js`, `settings.html`, `assets/thumb.svg`, README, and license metadata. Register the visualization factory, return a no-op renderer cleanly, and make the settings page load without errors.
 
-Phase 3: Build pure projection helpers. Implement pad profile validation for the MVP generic 3x3 layout, generic pedal profile validation with `indicator: "outline-top"` / `indicator: "outline-bottom"`, `drum_highway_3d`-compatible chart-to-pad projection, hit variant classification, hit group grouping, and localStorage-safe settings. Add the VM tests before connecting WebGL.
+Phase 3: Build pure projection helpers. Implement pad profile validation for the MVP generic 3x3 layout, generic pedal profile validation with `indicator: "outline-top"` / `indicator: "outline-bottom"`, generic empty external trigger profile validation with indicator-based custom trigger support, `drum_highway_3d`-compatible chart-to-pad projection, hit variant classification, hit group grouping, and localStorage-safe settings. Add the VM tests before connecting WebGL.
 
 Phase 4: Render the multipad highway MVP. Build the 3D pad grid, camera framing, front hit plane/pad targets, hit event placement, basic note meshes, and demo fallback. Then wire it to real `bundle.drumTab` data, enable `matchesArrangement` only once the renderer is visible/useful, and confirm Auto mode stays narrow: `drum_highway_3d` remains the default for drum/percussion arrangements, while `multipad_highway_3d` only auto-claims those arrangements when the standard drum highway is unavailable.
 
-Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, configurable direct piece assignments and fallbacks, optional per-piece display labels/colors, camera/graphics controls, and feedback intensity settings.
+Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, external trigger profile selection, configurable direct piece assignments and fallbacks, optional per-piece display labels/colors, camera/graphics controls, and feedback intensity settings.
 
 Phase 6: Polish visual feedback. Add pad flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, pedal indicator pulses, hit group cues, and shared background/cinematic helpers where they make sense.
 
@@ -180,7 +185,7 @@ Phase 9, post-MVP: Production hardening. Test with real hardware only after MIDI
 
 ## 6. Additional Work to Get Production Ready
 
-Visual preset quality: The MVP generic 3x3 pad profile and generic pedal profile should be verified against representative drum charts. Hardware-specific presets can wait until MIDI/input enters scope.
+Visual preset quality: The MVP generic 3x3 pad profile, generic pedal profile, and empty generic external trigger profile should be verified against representative drum charts. Hardware-specific presets can wait until MIDI/input enters scope.
 
 Fallback behavior: Define what users see on browsers without WebGL2, without drum tabs, or with unsupported chart data. The plugin should degrade visually without requiring MIDI hardware.
 
@@ -192,7 +197,7 @@ Performance hardening: Profile dense charts, long songs, repeated song swaps, an
 
 Documentation: Add README usage notes, a visual-layout section, screenshots, known limitations, and a short comparison with `drum_highway_3d`. Hardware setup and Web MIDI troubleshooting belong with the post-MVP MIDI/scoring work.
 
-Release hygiene: Choose an AGPL-compatible license, maintain a changelog, bump versions when settings/styles/assets change, keep bundled and standalone histories clear if promoted to core, and include the plugin in any curated-list metadata only after tests and docs are complete.
+Release hygiene: Choose an AGPL-compatible license, maintain a changelog, bump versions when settings/styles/assets change, and include the plugin in any curated-list metadata only after tests and docs are complete. V1 release packaging should happen from the standalone `feedBack-plugin-multipad-highway-3d` repository; keep the in-tree `plugins/multipad_highway_3d` history and standalone release history easy to separate if the plugin is later mirrored back into the main FeedBack repo.
 
 QA matrix: Before production, test v2 UI, v3 UI, desktop browser, desktop app if applicable, splitscreen, selected-instrument routing, full-band sloppaks, drum-only sloppaks, missing drum tabs, and dense drum charts. Add real multipad testing once MIDI/input enters scope.
 
@@ -202,7 +207,7 @@ Additional controller profiles: Add presets for Roland SPD-SX/SPD-SX Pro, Yamaha
 
 MIDI output and pad lighting: Explore whether supported controllers can receive MIDI feedback for pad LEDs, metronome pulses, hit/miss colors, or upcoming-note previews.
 
-External triggers and pedals: Promote kick, hi-hat pedal, footswitches, dual-zone triggers, choke gestures, aftertouch, and control-change gestures into first-class profile inputs.
+External triggers and pedals: External pad triggers live in a dedicated trigger profile with indicator-based UI, separate from the built-in pad profile. Later work should add hardware-specific trigger presets and promote footswitches, dual-zone triggers, choke gestures, aftertouch, and control-change gestures into first-class profile inputs.
 
 Advanced drum articulations: Add drags, ruffs, rolls, buzzes, cymbal chokes, stickings, left/right hand hints, double-kick notation, velocity-layer visuals, and per-piece timing windows.
 
