@@ -8100,6 +8100,26 @@ function _resolveEditRegion() {
     return { a: Math.max(0, t - 4), b: t + 4 };
 }
 
+/* @pure:editor-pending-view:start */
+function _buildEditorPendingViewPure(filename, arrangement, region, opts) {
+    const options = opts || {};
+    const view = {
+        filename,
+        arrangement: Number.isFinite(arrangement) && arrangement >= 0 ? arrangement : 0,
+        barSel: region ? { startTime: region.a, endTime: region.b } : null,
+    };
+    if (options.returnToHighway) view.returnToHighway = true;
+    if (typeof options.cursorTime === 'number') {
+        view.cursorTime = options.cursorTime;
+    } else if (region && typeof region.a === 'number') {
+        view.cursorTime = region.a;
+    }
+    if (typeof options.scrollX === 'number') view.scrollX = Math.max(0, options.scrollX);
+    if (typeof options.zoom === 'number' && options.zoom > 0) view.zoom = options.zoom;
+    return view;
+}
+/* @pure:editor-pending-view:end */
+
 // Enable "Edit region" whenever the editor plugin is present and a song is
 // loaded; show "↩ Editor" only while a return context is pending.
 function _updateEditRegionBtn() {
@@ -8126,12 +8146,9 @@ function editRegionInEditor() {
             arrangement = si.arrangement_index;
         }
     } catch (_) { /* default to 0 */ }
-    window._editorPendingView = {
-        filename: currentFilename,
-        arrangement,
-        barSel: { startTime: region.a, endTime: region.b },
+    window._editorPendingView = _buildEditorPendingViewPure(currentFilename, arrangement, region, {
         returnToHighway: true,
-    };
+    });
     window.editSong(currentFilename);
 }
 window.editRegionInEditor = editRegionInEditor;
@@ -8143,14 +8160,14 @@ function returnToEditorFromHighway() {
     const ctx = window._highwayReturnCtx;
     if (!ctx || typeof window.editSong !== 'function') return;
     window._highwayReturnCtx = null;
-    window._editorPendingView = {
-        filename: ctx.filename,
-        arrangement: ctx.arrangement,
+    const region = ctx.barSel
+        ? { a: ctx.barSel.startTime, b: ctx.barSel.endTime }
+        : null;
+    window._editorPendingView = _buildEditorPendingViewPure(ctx.filename, ctx.arrangement, region, {
         scrollX: ctx.scrollX,
         zoom: ctx.zoom,
         cursorTime: ctx.cursorTime,
-        barSel: ctx.barSel,
-    };
+    });
     window.editSong(ctx.filename);
 }
 window.returnToEditorFromHighway = returnToEditorFromHighway;
