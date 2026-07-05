@@ -177,6 +177,18 @@ Phase 4: Render the multipad highway MVP. Build the 3D pad grid, camera framing,
 
 Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, external trigger profile selection, configurable direct piece assignments and fallbacks, optional per-piece display labels/colors, camera/graphics controls, and feedback intensity settings.
 
+Phase 5 first-draft requirements:
+
+- The generic 3x3 layout remains the default, but the settings/profile controls must expose four default pad-layout choices: `3x3`, `2x4`, `4x3`, and `Custom`.
+- The custom pad layout should use a click-and-drag grid UI so a user can create arbitrary active-cell patterns within the supported grid bounds.
+- Pedal selection is separate from pad layout. Users should be able to enable up to two pedals.
+- External trigger selection is separate from pad layout. Users should be able to enable up to two external pad triggers, and each trigger can be single-zone or two-zone.
+- Default piece and color mappings must match `drum_highway_3d`. Color/piece remapping should use the same basic settings interaction model as `drum_highway_3d`, adapted from linear lanes to a grid of pads.
+- Unassigned pads, pedals, and trigger zones are valid. They must appear grayed out in settings and in the 3D highway. They must not send, receive, or route notes to their corresponding visual surfaces.
+- Multiple pedals mapped to the same piece are valid. For example, two pedals may both map to `kick`; either pedal can send kick events later, but the 3D UI still shows the standard kick pedal surface rather than two distinct kick surfaces.
+- If no pedal is mapped to `hh_pedal`, the special hi-hat pedal surface should not display as an active hi-hat surface.
+- Selecting or saving a profile makes that profile the new default instead of generic 3x3. A profile must include pad layout, pad piece assignments, pad display surface colors, pedal count/selection, pedal piece assignments, pedal display surface colors, external trigger count/selection, trigger zone mode, external trigger piece assignments, and external trigger display surface colors.
+
 Phase 6: Polish visual feedback. Add pad flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, pedal surface pulses, hit group cues, and shared background/cinematic helpers where they make sense.
 
 Phase 7: Stabilize the visual MVP. Run focused tests, verify desktop/mobile/splitscreen framing, tune performance, update docs/screenshots, and make sure the plugin works without MIDI hardware.

@@ -1,31 +1,517 @@
 <div role="group" aria-labelledby="multipad-h3d-heading">
     <h3 id="multipad-h3d-heading" class="text-sm font-medium text-gray-400 mb-2">Multipad Highway 3D</h3>
-    <p class="text-xs text-gray-500 mb-4">
-        The visualization shell is installed. The MVP renderer will start with
-        a generic pad-grid profile, with hi-hat pedal and kick hits shown as
-        top and bottom pedal surfaces.
-    </p>
 
-    <fieldset disabled aria-describedby="multipad-h3d-phase-note" class="space-y-4 opacity-70">
+    <div class="space-y-4">
         <div>
-            <label for="multipad-h3d-pad-profile" class="text-xs font-medium text-gray-400 mb-1 block">Pad profile</label>
-            <select id="multipad-h3d-pad-profile"
-                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
-                <option value="generic-3x3" selected>Generic pad grid (MVP 3x3)</option>
-            </select>
+            <label for="multipad-h3d-profile-name" class="text-xs font-medium text-gray-400 mb-1 block">Profile name</label>
+            <input type="text" id="multipad-h3d-profile-name" maxlength="80"
+                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-1.5 text-xs text-gray-300 outline-none">
         </div>
 
         <div>
-            <label for="multipad-h3d-pedal-profile" class="text-xs font-medium text-gray-400 mb-1 block">Pedal profile</label>
-            <select id="multipad-h3d-pedal-profile"
-                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
-                <option value="generic-pedals" selected>Generic pedals</option>
-            </select>
+            <label for="multipad-h3d-layout" class="text-xs font-medium text-gray-400 mb-1 block">Default pads layout</label>
+            <select id="multipad-h3d-layout"
+                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none"></select>
         </div>
-    </fieldset>
 
-    <p id="multipad-h3d-phase-note" class="text-xs text-gray-500 mt-4">
-        Profile editing, camera controls, and visual intensity controls arrive
-        after the data and renderer phases.
-    </p>
+        <div id="multipad-h3d-custom-panel" class="hidden border border-gray-800 rounded-lg p-3 bg-dark-800/40">
+            <div class="grid grid-cols-2 gap-2 mb-3">
+                <label class="text-xs text-gray-400">Rows
+                    <input type="number" id="multipad-h3d-custom-rows" min="1" max="12"
+                        class="mt-1 w-full bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">
+                </label>
+                <label class="text-xs text-gray-400">Columns
+                    <input type="number" id="multipad-h3d-custom-cols" min="1" max="12"
+                        class="mt-1 w-full bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">
+                </label>
+            </div>
+            <div id="multipad-h3d-custom-grid" class="select-none touch-none"></div>
+        </div>
+
+        <div class="border-t border-gray-800 pt-4">
+            <h4 class="text-xs font-medium text-gray-300 mb-2">Pads</h4>
+            <div id="multipad-h3d-pads" class="space-y-1"></div>
+            <details class="mt-3">
+                <summary class="text-xs text-gray-400 cursor-pointer">Chart fallbacks</summary>
+                <div id="multipad-h3d-fallbacks" class="space-y-1 mt-2"></div>
+            </details>
+        </div>
+
+        <div class="border-t border-gray-800 pt-4">
+            <div class="flex items-center gap-2 mb-2">
+                <h4 class="text-xs font-medium text-gray-300 flex-1">Pedals</h4>
+                <select id="multipad-h3d-pedal-count"
+                    class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                </select>
+            </div>
+            <div id="multipad-h3d-pedals" class="space-y-1"></div>
+        </div>
+
+        <div class="border-t border-gray-800 pt-4">
+            <div class="flex items-center gap-2 mb-2">
+                <h4 class="text-xs font-medium text-gray-300 flex-1">External triggers</h4>
+                <select id="multipad-h3d-trigger-count"
+                    class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                </select>
+            </div>
+            <div id="multipad-h3d-triggers" class="space-y-2"></div>
+        </div>
+
+        <div class="border-t border-gray-800 pt-4">
+            <h4 class="text-xs font-medium text-gray-300 mb-2">Display</h4>
+            <label for="multipad-h3d-hit-window" class="text-xs font-medium text-gray-400 mb-1 block">
+                Hit group window <span id="multipad-h3d-hit-window-val" class="text-gray-500 font-mono">8</span> ms
+            </label>
+            <input type="range" id="multipad-h3d-hit-window" min="0" max="50" step="1" value="8" class="w-full">
+            <label for="multipad-h3d-show-labels" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-3">
+                <input type="checkbox" id="multipad-h3d-show-labels" checked>
+                Show surface labels
+            </label>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 border-t border-gray-800 pt-4">
+            <button type="button" id="multipad-h3d-save"
+                class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded-lg text-xs">Save profile</button>
+            <button type="button" id="multipad-h3d-reset"
+                class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs">Reset</button>
+            <span id="multipad-h3d-status" class="text-xs text-gray-500 ml-auto"></span>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        const FRIENDLY = {
+            kick: 'Kick',
+            snare: 'Snare', snare_xstick: 'Snare (cross-stick)',
+            hh_closed: 'Hi-hat (closed)', hh_open: 'Hi-hat (open)', hh_pedal: 'Hi-hat (pedal)',
+            tom_hi: 'Tom - high', tom_mid: 'Tom - mid', tom_low: 'Tom - low', tom_floor: 'Floor tom',
+            crash_l: 'Crash (left)', crash_r: 'Crash (right)', splash: 'Splash', china: 'China',
+            ride: 'Ride', ride_bell: 'Ride bell',
+        };
+        const TRIGGER_SIDES = [
+            { id: 'trigger-1', name: 'Trigger 1', center: 'external-left-center', edge: 'external-left-edge' },
+            { id: 'trigger-2', name: 'Trigger 2', center: 'external-right-center', edge: 'external-right-edge' },
+        ];
+
+        let profile = null;
+        let padPieces = [];
+        let pedalPieces = [];
+        let pieceColors = {};
+        let dragTarget = null;
+
+        function friendly(piece) { return FRIENDLY[piece] || piece; }
+        function clone(value) { return JSON.parse(JSON.stringify(value)); }
+        function clampInt(value, min, max, fallback) {
+            const n = parseInt(value, 10);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.min(max, Math.max(min, n));
+        }
+        function pieceColor(piece) { return pieceColors[piece] || '#2d3748'; }
+        function setStatus(message, kind) {
+            const el = document.getElementById('multipad-h3d-status');
+            if (!el) return;
+            el.textContent = message;
+            el.className = 'text-xs ml-auto ' + (kind === 'err' ? 'text-red-400' : kind === 'ok' ? 'text-emerald-400' : 'text-gray-500');
+            setTimeout(() => { if (el.textContent === message) el.textContent = ''; }, 2600);
+        }
+        function saveProfile(message) {
+            const name = document.getElementById('multipad-h3d-profile-name');
+            if (name) profile.name = (name.value || profile.name || 'Custom multipad profile').slice(0, 80);
+            if (window.multipadH3dSetProfile && window.multipadH3dSetProfile(profile)) {
+                if (message) setStatus(message, 'ok');
+                return true;
+            }
+            setStatus('profile not saved', 'err');
+            return false;
+        }
+        function optionHtml(pieces, selected, allowNone) {
+            let html = allowNone ? '<option value="">Unassigned</option>' : '';
+            for (const piece of pieces) {
+                html += `<option value="${piece}"${piece === selected ? ' selected' : ''}>${friendly(piece)}</option>`;
+            }
+            return html;
+        }
+        function syncPadLabel(pad) {
+            pad.label = pad.pieces && pad.pieces[0]
+                ? ((window.multipadH3dGetPieceLabels && window.multipadH3dGetPieceLabels()[pad.pieces[0]]) || pad.pieces[0].toUpperCase())
+                : '';
+            if (!pad.color || pad.color === '#2d3748') pad.color = pad.pieces[0] ? pieceColor(pad.pieces[0]) : '#2d3748';
+        }
+        function getPadAt(row, col) {
+            return profile.padProfile.pads.find(pad => pad.row === row && pad.col === col) || null;
+        }
+        function setPadActive(row, col, active) {
+            const pads = profile.padProfile.pads;
+            const existing = getPadAt(row, col);
+            if (active && !existing) {
+                const id = String(row * profile.padProfile.cols + col + 1);
+                pads.push({ id, row, col, label: '', pieces: [], color: '#2d3748' });
+                pads.sort((a, b) => a.row - b.row || a.col - b.col);
+            } else if (!active && existing && pads.length > 1) {
+                profile.padProfile.pads = pads.filter(pad => !(pad.row === row && pad.col === col));
+            }
+        }
+        function applyCustomDimensions() {
+            const rows = clampInt(document.getElementById('multipad-h3d-custom-rows').value, 1, 12, profile.padProfile.rows);
+            const cols = clampInt(document.getElementById('multipad-h3d-custom-cols').value, 1, 12, profile.padProfile.cols);
+            profile.id = 'custom';
+            profile.padProfile.id = 'custom';
+            profile.padProfile.name = 'Custom';
+            profile.padProfile.rows = rows;
+            profile.padProfile.cols = cols;
+            profile.padProfile.pads = profile.padProfile.pads
+                .filter(pad => pad.row < rows && pad.col < cols)
+                .map(pad => Object.assign({}, pad, { id: String(pad.row * cols + pad.col + 1) }));
+            if (!profile.padProfile.pads.length) setPadActive(0, 0, true);
+            render();
+            saveProfile();
+        }
+        function renderLayoutControls() {
+            const sel = document.getElementById('multipad-h3d-layout');
+            const layouts = window.multipadH3dGetPadLayouts ? window.multipadH3dGetPadLayouts() : [];
+            sel.innerHTML = '';
+            for (const layout of layouts) {
+                const opt = document.createElement('option');
+                opt.value = layout.id;
+                opt.textContent = layout.id === 'custom' ? 'Custom' : layout.name.replace('Generic ', '');
+                opt.selected = profile.padProfile.id === layout.id;
+                sel.appendChild(opt);
+            }
+            sel.onchange = () => {
+                profile = window.multipadH3dCreateProfileForLayout(sel.value);
+                document.getElementById('multipad-h3d-profile-name').value = profile.name;
+                saveProfile('profile saved');
+                render();
+            };
+
+            const custom = profile.padProfile.id === 'custom';
+            document.getElementById('multipad-h3d-custom-panel').classList.toggle('hidden', !custom);
+            document.getElementById('multipad-h3d-custom-rows').value = String(profile.padProfile.rows);
+            document.getElementById('multipad-h3d-custom-cols').value = String(profile.padProfile.cols);
+        }
+        function renderCustomGrid() {
+            const el = document.getElementById('multipad-h3d-custom-grid');
+            el.innerHTML = '';
+            el.style.display = 'grid';
+            el.style.gridTemplateColumns = `repeat(${profile.padProfile.cols}, minmax(0, 1fr))`;
+            el.style.gap = '4px';
+            for (let row = 0; row < profile.padProfile.rows; row++) {
+                for (let col = 0; col < profile.padProfile.cols; col++) {
+                    const pad = getPadAt(row, col);
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.dataset.row = String(row);
+                    btn.dataset.col = String(col);
+                    btn.className = 'h-8 rounded border text-[10px] ' + (pad
+                        ? 'bg-sky-900/50 border-sky-600 text-sky-100'
+                        : 'bg-dark-700 border-gray-800 text-gray-600');
+                    btn.textContent = pad ? String(row * profile.padProfile.cols + col + 1) : '';
+                    btn.onpointerdown = (ev) => {
+                        ev.preventDefault();
+                        dragTarget = !getPadAt(row, col);
+                        setPadActive(row, col, dragTarget);
+                        render();
+                    };
+                    btn.onpointerenter = () => {
+                        if (dragTarget === null) return;
+                        setPadActive(row, col, dragTarget);
+                        render();
+                    };
+                    el.appendChild(btn);
+                }
+            }
+            document.onpointerup = () => {
+                if (dragTarget !== null) saveProfile();
+                dragTarget = null;
+            };
+        }
+        function renderPads() {
+            const el = document.getElementById('multipad-h3d-pads');
+            el.innerHTML = '';
+            for (const pad of profile.padProfile.pads) {
+                const piece = pad.pieces && pad.pieces[0] || '';
+                const row = document.createElement('div');
+                row.className = 'grid grid-cols-[2.5rem_1fr_2.25rem] items-center gap-2 px-2 py-1 rounded ' +
+                    (piece ? 'bg-dark-700/60' : 'bg-dark-700/30 opacity-75');
+                row.innerHTML =
+                    `<span class="font-mono text-[10px] text-gray-500">R${pad.row + 1}C${pad.col + 1}</span>` +
+                    `<select data-pad="${pad.id}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
+                    `<input type="color" data-color="${pad.id}" value="${pad.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
+                el.appendChild(row);
+            }
+            el.querySelectorAll('select').forEach(sel => {
+                sel.onchange = () => {
+                    const pad = profile.padProfile.pads.find(p => p.id === sel.dataset.pad);
+                    if (!pad) return;
+                    pad.pieces = sel.value ? [sel.value] : [];
+                    pad.color = sel.value ? pieceColor(sel.value) : '#2d3748';
+                    syncPadLabel(pad);
+                    saveProfile();
+                    render();
+                };
+            });
+            el.querySelectorAll('input[type=color]').forEach(input => {
+                input.oninput = () => {
+                    const pad = profile.padProfile.pads.find(p => p.id === input.dataset.color);
+                    if (!pad) return;
+                    pad.color = input.value;
+                    saveProfile();
+                };
+            });
+        }
+        function renderFallbacks() {
+            const el = document.getElementById('multipad-h3d-fallbacks');
+            el.innerHTML = '';
+            const assigned = [];
+            for (const pad of profile.padProfile.pads) {
+                for (const piece of pad.pieces || []) {
+                    if (!assigned.includes(piece)) assigned.push(piece);
+                }
+            }
+            const assignedSet = new Set(assigned);
+            profile.padProfile.fallbacks = profile.padProfile.fallbacks || {};
+            for (const key of Object.keys(profile.padProfile.fallbacks)) {
+                if (!assignedSet.has(profile.padProfile.fallbacks[key])) delete profile.padProfile.fallbacks[key];
+            }
+            for (const piece of padPieces) {
+                if (assignedSet.has(piece)) continue;
+                const current = profile.padProfile.fallbacks[piece] || '';
+                const row = document.createElement('div');
+                row.className = 'grid grid-cols-[1fr_1rem_1fr] items-center gap-2 px-2 py-1';
+                let opts = '<option value="">Drop</option>';
+                for (const target of assigned) {
+                    opts += `<option value="${target}"${target === current ? ' selected' : ''}>${friendly(target)}</option>`;
+                }
+                row.innerHTML =
+                    `<span class="text-xs text-gray-400">${friendly(piece)}</span>` +
+                    `<span class="text-xs text-gray-600 text-center">→</span>` +
+                    `<select data-from="${piece}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${opts}</select>`;
+                el.appendChild(row);
+            }
+            el.querySelectorAll('select').forEach(sel => {
+                sel.onchange = () => {
+                    if (sel.value) profile.padProfile.fallbacks[sel.dataset.from] = sel.value;
+                    else delete profile.padProfile.fallbacks[sel.dataset.from];
+                    saveProfile();
+                    renderFallbacks();
+                };
+            });
+        }
+        function rebuildPedals(count) {
+            const current = profile.pedalProfile.pedals || [];
+            const next = [];
+            for (let i = 0; i < count; i++) {
+                const existing = current[i] || {};
+                const piece = existing.pieces && existing.pieces[0] || (i === 0 ? 'hh_pedal' : 'kick');
+                next.push({
+                    id: existing.id || 'pedal-' + (i + 1),
+                    surface: piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom',
+                    label: piece ? ((window.multipadH3dGetPieceLabels && window.multipadH3dGetPieceLabels()[piece]) || piece) : '',
+                    pieces: piece ? [piece] : [],
+                    color: existing.color || (piece ? pieceColor(piece) : '#2d3748'),
+                });
+            }
+            profile.pedalProfile.pedals = next;
+        }
+        function renderPedals() {
+            const countSel = document.getElementById('multipad-h3d-pedal-count');
+            countSel.value = String((profile.pedalProfile.pedals || []).length);
+            countSel.onchange = () => {
+                rebuildPedals(clampInt(countSel.value, 0, 2, 0));
+                saveProfile();
+                render();
+            };
+            const el = document.getElementById('multipad-h3d-pedals');
+            el.innerHTML = '';
+            (profile.pedalProfile.pedals || []).forEach((pedal, i) => {
+                const piece = pedal.pieces && pedal.pieces[0] || '';
+                const row = document.createElement('div');
+                row.className = 'grid grid-cols-[4rem_1fr_2.25rem] items-center gap-2 px-2 py-1 rounded ' +
+                    (piece ? 'bg-dark-700/60' : 'bg-dark-700/30 opacity-75');
+                row.innerHTML =
+                    `<span class="text-[10px] text-gray-500">Pedal ${i + 1}</span>` +
+                    `<select data-i="${i}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(pedalPieces, piece, true)}</select>` +
+                    `<input type="color" data-color="${i}" value="${pedal.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
+                el.appendChild(row);
+            });
+            el.querySelectorAll('select').forEach(sel => {
+                sel.onchange = () => {
+                    const pedal = profile.pedalProfile.pedals[parseInt(sel.dataset.i, 10)];
+                    const piece = sel.value;
+                    pedal.pieces = piece ? [piece] : [];
+                    pedal.surface = piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom';
+                    pedal.label = piece ? friendly(piece) : '';
+                    pedal.color = piece ? pieceColor(piece) : '#2d3748';
+                    saveProfile();
+                    render();
+                };
+            });
+            el.querySelectorAll('input[type=color]').forEach(input => {
+                input.oninput = () => {
+                    const pedal = profile.pedalProfile.pedals[parseInt(input.dataset.color, 10)];
+                    if (!pedal) return;
+                    pedal.color = input.value;
+                    saveProfile();
+                };
+            });
+        }
+        function triggerMeta() {
+            const bySurface = new Map((profile.triggerProfile.triggers || []).map(trigger => [trigger.surface, trigger]));
+            return TRIGGER_SIDES.map(side => ({
+                side,
+                center: bySurface.get(side.center) || null,
+                edge: bySurface.get(side.edge) || null,
+            }));
+        }
+        function rebuildTriggers(count, modes) {
+            const current = triggerMeta();
+            const next = [];
+            for (let i = 0; i < count; i++) {
+                const mode = modes[i] || (current[i].edge ? 'dual' : 'single');
+                const center = current[i].center || {};
+                next.push({
+                    id: TRIGGER_SIDES[i].id + '-center',
+                    surface: TRIGGER_SIDES[i].center,
+                    label: center.label || '',
+                    pieces: center.pieces || [],
+                    color: center.color || (center.pieces && center.pieces[0] ? pieceColor(center.pieces[0]) : '#2d3748'),
+                });
+                if (mode === 'dual') {
+                    const edge = current[i].edge || {};
+                    next.push({
+                        id: TRIGGER_SIDES[i].id + '-edge',
+                        surface: TRIGGER_SIDES[i].edge,
+                        label: edge.label || '',
+                        pieces: edge.pieces || [],
+                        color: edge.color || (edge.pieces && edge.pieces[0] ? pieceColor(edge.pieces[0]) : '#2d3748'),
+                    });
+                }
+            }
+            profile.triggerProfile.triggers = next;
+        }
+        function renderTriggers() {
+            const meta = triggerMeta();
+            const count = meta.filter(item => item.center || item.edge).length;
+            const countSel = document.getElementById('multipad-h3d-trigger-count');
+            countSel.value = String(count);
+            countSel.onchange = () => {
+                rebuildTriggers(clampInt(countSel.value, 0, 2, 0), meta.map(item => item.edge ? 'dual' : 'single'));
+                saveProfile();
+                render();
+            };
+            const el = document.getElementById('multipad-h3d-triggers');
+            el.innerHTML = '';
+            triggerMeta().slice(0, count).forEach((item, i) => {
+                const mode = item.edge ? 'dual' : 'single';
+                const wrap = document.createElement('div');
+                wrap.className = 'rounded bg-dark-700/40 px-2 py-2';
+                wrap.innerHTML =
+                    `<div class="flex items-center gap-2 mb-2">` +
+                    `<span class="text-xs text-gray-400 flex-1">${item.side.name}</span>` +
+                    `<select data-mode="${i}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">` +
+                    `<option value="single"${mode === 'single' ? ' selected' : ''}>1-zone</option>` +
+                    `<option value="dual"${mode === 'dual' ? ' selected' : ''}>2-zone</option>` +
+                    `</select></div>` +
+                    zoneRow(item.center, i, 'center') +
+                    (mode === 'dual' ? zoneRow(item.edge, i, 'edge') : '');
+                el.appendChild(wrap);
+            });
+            el.querySelectorAll('select[data-mode]').forEach(sel => {
+                sel.onchange = () => {
+                    const modes = triggerMeta().map((item, idx) => idx === parseInt(sel.dataset.mode, 10) ? sel.value : (item.edge ? 'dual' : 'single'));
+                    rebuildTriggers(count, modes);
+                    saveProfile();
+                    render();
+                };
+            });
+            el.querySelectorAll('select[data-zone]').forEach(sel => {
+                sel.onchange = () => {
+                    const trigger = profile.triggerProfile.triggers.find(t => t.surface === sel.dataset.zone);
+                    if (!trigger) return;
+                    trigger.pieces = sel.value ? [sel.value] : [];
+                    trigger.label = sel.value ? friendly(sel.value) : '';
+                    trigger.color = sel.value ? pieceColor(sel.value) : '#2d3748';
+                    saveProfile();
+                    render();
+                };
+            });
+            el.querySelectorAll('input[type=color]').forEach(input => {
+                input.oninput = () => {
+                    const trigger = profile.triggerProfile.triggers.find(t => t.surface === input.dataset.color);
+                    if (!trigger) return;
+                    trigger.color = input.value;
+                    saveProfile();
+                };
+            });
+        }
+        function zoneRow(trigger, index, zone) {
+            const piece = trigger && trigger.pieces && trigger.pieces[0] || '';
+            const surface = TRIGGER_SIDES[index][zone];
+            const label = zone === 'center' ? 'Center' : 'Edge';
+            return `<div class="grid grid-cols-[3.5rem_1fr_2.25rem] items-center gap-2 py-1 ${piece ? '' : 'opacity-75'}">` +
+                `<span class="text-[10px] text-gray-500">${label}</span>` +
+                `<select data-zone="${surface}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
+                `<input type="color" data-color="${surface}" value="${trigger && trigger.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">` +
+                `</div>`;
+        }
+        function hydrateDisplayControls() {
+            const settings = (window.feedBackViz_multipad_highway_3d && window.feedBackViz_multipad_highway_3d.__test && window.feedBackViz_multipad_highway_3d.__test.readSettings())
+                || { showLabels: true, hitGroupWindowMs: 8 };
+            const show = document.getElementById('multipad-h3d-show-labels');
+            const range = document.getElementById('multipad-h3d-hit-window');
+            const label = document.getElementById('multipad-h3d-hit-window-val');
+            show.checked = !!settings.showLabels;
+            range.value = String(settings.hitGroupWindowMs);
+            label.textContent = String(settings.hitGroupWindowMs);
+            show.onchange = () => window.feedBackViz_multipad_highway_3d.__test.writeSetting('showLabels', show.checked);
+            range.oninput = () => {
+                label.textContent = range.value;
+                window.feedBackViz_multipad_highway_3d.__test.writeSetting('hitGroupWindowMs', range.value);
+            };
+        }
+        function render() {
+            document.getElementById('multipad-h3d-profile-name').value = profile.name || '';
+            renderLayoutControls();
+            renderCustomGrid();
+            renderPads();
+            renderFallbacks();
+            renderPedals();
+            renderTriggers();
+        }
+        function boot() {
+            if (!window.multipadH3dGetProfile) {
+                setTimeout(boot, 100);
+                return;
+            }
+            profile = window.multipadH3dGetProfile();
+            padPieces = window.multipadH3dGetPadPieces ? window.multipadH3dGetPadPieces() : [];
+            pedalPieces = window.multipadH3dGetPedalPieces ? window.multipadH3dGetPedalPieces() : ['kick', 'hh_pedal'];
+            pieceColors = window.multipadH3dGetPieceColors ? window.multipadH3dGetPieceColors() : {};
+            document.getElementById('multipad-h3d-profile-name').onchange = () => saveProfile('profile saved');
+            document.getElementById('multipad-h3d-custom-rows').onchange = applyCustomDimensions;
+            document.getElementById('multipad-h3d-custom-cols').onchange = applyCustomDimensions;
+            document.getElementById('multipad-h3d-save').onclick = () => saveProfile('profile saved');
+            document.getElementById('multipad-h3d-reset').onclick = () => {
+                window.multipadH3dResetProfile && window.multipadH3dResetProfile();
+                profile = window.multipadH3dGetProfile();
+                setStatus('reset to 3x3', 'ok');
+                render();
+            };
+            hydrateDisplayControls();
+            render();
+        }
+        window.addEventListener('multipad_h3d:profile', () => {
+            if (!window.multipadH3dGetProfile) return;
+            profile = window.multipadH3dGetProfile();
+            render();
+        });
+        boot();
+    })();
+    </script>
 </div>

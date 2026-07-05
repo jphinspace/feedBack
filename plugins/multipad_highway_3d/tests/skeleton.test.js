@@ -156,8 +156,9 @@ test('external trigger profile routes off-grid pad inputs by surface', () => {
 
     assert.equal(profile.id, 'external-triggers');
     assert.equal(profile.name, 'External snare');
-    assert.deepEqual(plain(profile.triggers.map(t => t.id)), ['snare-in']);
+    assert.deepEqual(plain(profile.triggers.map(t => t.id)), ['snare-in', 'bad']);
     assert.deepEqual(plain(profile.triggers[0].pieces), ['snare']);
+    assert.deepEqual(plain(profile.triggers[1].pieces), []);
     assert.equal(profile.triggers[0].surface, 'outline-left');
     assert.equal(profile.triggers[0].color, '#a78bfa');
     assert.equal(t.colorHexFromCss(profile.triggers[0].color), 0xa78bfa);
@@ -240,10 +241,14 @@ test('surface layout renders every accepted pedal and trigger surface', () => {
     assert.equal(leftEdge.shape, 'ring');
     assert.equal(rightCenter.shape, 'circle');
     assert.equal(rightEdge.shape, 'ring');
-    assert.equal(leftCenter.color, 0xfde68a);
-    assert.equal(leftEdge.color, 0xfacc15);
-    assert.equal(rightCenter.color, 0xfdba74);
-    assert.equal(rightEdge.color, 0xf97316);
+    assert.equal(leftCenter.active, false);
+    assert.equal(leftEdge.active, false);
+    assert.equal(rightCenter.active, false);
+    assert.equal(rightEdge.active, false);
+    assert.equal(leftCenter.color, 0x2d3748);
+    assert.equal(leftEdge.color, 0x2d3748);
+    assert.equal(rightCenter.color, 0x2d3748);
+    assert.equal(rightEdge.color, 0x2d3748);
     assert.equal(leftCenter.x, leftEdge.x);
     assert.equal(rightCenter.x, rightEdge.x);
     assert.equal(leftCenter.x, -rightCenter.x);
@@ -312,11 +317,52 @@ test('pedal profile validation supports kick and hi-hat pedal surfaces', () => {
     assert.deepEqual(plain(profile.pedals.map(p => p.pieces)), [['hh_pedal'], ['kick']]);
     assert.equal(profile.pedals[0].color, '#22d3ee');
     assert.equal(profile.pedals[1].label, 'BD');
-    assert.equal(t.validatePedalProfile({ pedals: [{ surface: 'outline-top', pieces: ['snare'] }] }), null);
+    const inactive = t.validatePedalProfile({ pedals: [{ surface: 'outline-top', pieces: ['snare'] }] });
+    assert.equal(inactive.pedals.length, 1);
+    assert.deepEqual(plain(inactive.pedals[0].pieces), []);
+
+    const duplicateKick = t.validatePedalProfile({
+        pedals: [
+            { id: 'kick-a', surface: 'outline-bottom', pieces: ['kick'] },
+            { id: 'kick-b', surface: 'outline-bottom', pieces: ['kick'] },
+        ],
+    });
+    assert.deepEqual(plain(duplicateKick.pedals.map(p => p.pieces)), [['kick'], ['kick']]);
 
     const pedalMap = t.buildPieceToPedalMap(t.DEFAULT_PEDAL_PROFILE);
     assert.equal(pedalMap.hh_pedal.surface, 'outline-top');
     assert.equal(pedalMap.kick.surface, 'outline-bottom');
+    assert.equal(t.DEFAULT_PEDAL_PROFILE.pedals[0].color, '#6bffe6');
+    assert.equal(t.DEFAULT_PEDAL_PROFILE.pedals[1].color, '#ffa030');
+});
+
+test('inactive pads remain visible but do not route notes', () => {
+    const t = loadFactory().__test;
+    const profile = t.validatePadProfile({
+        id: 'inactive-grid',
+        name: 'Inactive grid',
+        rows: 1,
+        cols: 2,
+        pads: [
+            { id: 'empty', row: 0, col: 0, pieces: [] },
+            { id: 'snare-pad', row: 0, col: 1, pieces: ['snare'] },
+        ],
+    });
+    assert.equal(profile.pads.length, 2);
+    assert.deepEqual(plain(profile.pads[0].pieces), []);
+
+    const layout = t.buildSurfaceLayout(profile, { pedals: [] }, { triggers: [] });
+    const emptySurface = layout.surfaces.find(surface => surface.key === 'pad:empty');
+    assert.equal(emptySurface.active, false);
+    assert.equal(emptySurface.color, 0x2d3748);
+
+    const projected = t.projectDrumTab({
+        hits: [
+            { t: 0, p: 'snare' },
+            { t: 1, p: 'tom_hi' },
+        ],
+    }, { padProfile: profile, pedalProfile: { pedals: [] }, triggerProfile: { triggers: [] } });
+    assert.deepEqual(plain(projected.hitEvents.map(event => event.piece)), ['snare']);
 });
 
 test('variant classification mirrors drum highway precedence', () => {
@@ -460,4 +506,48 @@ test('settings survive missing and corrupt localStorage', () => {
     factory.__test.writeSetting('showLabels', true);
     assert.equal(store.get('multipad_h3d_hit_group_window_ms'), '0');
     assert.equal(store.get('multipad_h3d_show_labels'), '1');
+});
+
+test('profile API exposes phase five layout choices and persists saved defaults', () => {
+    const { factory, store } = loadFactoryWithStorage();
+    const layouts = factory.__test.BUILTIN_PAD_PROFILE_IDS;
+    assert.deepEqual(plain(layouts), ['generic-3x3', 'generic-2x4', 'generic-4x3', 'custom']);
+
+    const profile = factory.__test.readMultipadProfile();
+    profile.id = 'phase-five';
+    profile.name = 'Phase Five';
+    profile.padProfile = factory.__test.validatePadProfile({
+        id: 'custom',
+        name: 'Custom',
+        rows: 2,
+        cols: 2,
+        pads: [
+            { id: '1', row: 0, col: 0, pieces: ['snare'], color: '#ff2828' },
+            { id: '4', row: 1, col: 1, pieces: [], color: '#2d3748' },
+        ],
+    });
+    profile.pedalProfile = factory.__test.validatePedalProfile({
+        id: 'pedals',
+        name: 'Two kicks',
+        pedals: [
+            { id: 'left', surface: 'outline-bottom', pieces: ['kick'], color: '#ffa030' },
+            { id: 'right', surface: 'outline-bottom', pieces: ['kick'], color: '#ffa030' },
+        ],
+    });
+    profile.triggerProfile = factory.__test.validateTriggerProfile({
+        id: 'triggers',
+        name: 'One dual trigger',
+        triggers: [
+            { id: 't1-center', surface: 'external-left-center', pieces: ['tom_hi'], color: '#30d040' },
+            { id: 't1-edge', surface: 'external-left-edge', pieces: [], color: '#2d3748' },
+        ],
+    });
+
+    assert.equal(factory.__test.writeMultipadProfile(profile), true);
+    assert.ok(store.get('multipad_h3d_profile_v1'));
+    const saved = factory.__test.readMultipadProfile();
+    assert.equal(saved.id, 'phase-five');
+    assert.equal(saved.padProfile.rows, 2);
+    assert.deepEqual(plain(saved.pedalProfile.pedals.map(pedal => pedal.pieces)), [['kick'], ['kick']]);
+    assert.deepEqual(plain(saved.triggerProfile.triggers.map(trigger => trigger.pieces)), [['tom_hi'], []]);
 });
