@@ -33,7 +33,7 @@
     }
   },
   "category": "practice",
-  "description": "Multipad-focused drum chart highway with a separate kick outline path.",
+  "description": "Multipad-focused drum chart highway with separate pedal indicators.",
   "icon": "assets/thumb.svg",
   "license": "AGPL-3.0-only"
 }

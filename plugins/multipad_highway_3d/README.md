@@ -2,9 +2,9 @@
 
 Multipad Highway 3D is a planned multipad-layout visualization for drum charts.
 It displays ordinary `drum_highway_3d` piece ids through a front-facing
-multipad layout instead of a single horizontal lane row. Kick hits are reserved
-for a separate pedal profile and will render as a yellow outline around the
-full grid.
+multipad layout instead of a single horizontal lane row. Hi-hat pedal and kick
+hits are reserved for a separate pedal profile and will render as top and
+bottom pedal indicators.
 
 This directory currently contains the Phase 2 skeleton from `PLANNING.md`:
 
@@ -22,7 +22,7 @@ projection and renderer phases are implemented.
 ## Layout Direction
 
 The target visual is an abstract m x n performance grid. The hit plane should
-read as rectangular pad cells, with each cell extending backward into its own
+read as rectangular pads, with each pad extending backward into its own
 tunnel. The MVP starts with a generic 3x3 pad profile, but the renderer should
 remain open to layouts such as 2x4, 4x3, or 1x12 instead of treating 3x3 as the
 plugin's permanent shape.
