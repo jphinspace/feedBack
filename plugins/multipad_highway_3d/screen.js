@@ -223,6 +223,7 @@
     const NOTE_BEHIND_SEC = 0.28;
     const HIT_PULSE_SEC = 0.16;
     const DEMO_PATTERN_SEC = 4;
+    const RENDER_CURSOR_REBASE_SEC = 0.75;
     /** localStorage keys are namespaced so this plugin never collides with drum_h3d. */
     const LS_KEYS = Object.freeze({
         padProfileId: 'multipad_h3d_pad_profile',
@@ -290,6 +291,24 @@
     function colorHexFromCss(color) {
         if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) return null;
         return Number.parseInt(color.slice(1), 16);
+    }
+
+    /**
+     * Find the first sorted hit event whose time is at or after `minTime`.
+     *
+     * @param {Array<object>} hitEvents - Sorted projected hit events.
+     * @param {number} minTime - Earliest visible event time.
+     * @returns {number} Start index into `hitEvents`.
+     */
+    function lowerBoundHitEvents(hitEvents, minTime) {
+        let lo = 0;
+        let hi = Array.isArray(hitEvents) ? hitEvents.length : 0;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (hitEvents[mid].t < minTime) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
     }
 
     /**
@@ -1026,6 +1045,9 @@
         let cachedProjection = null;
         let demoProjection = null;
         let activeSurfaceLayoutKey = null;
+        let renderCursorProjection = null;
+        let renderCursorIndex = 0;
+        let renderCursorTime = -Infinity;
         let visibleNoteCount = 0;
 
         /**
@@ -1065,7 +1087,8 @@
             const disposedMaterials = new Set();
             const disposedGeometry = new Set();
             root.traverse(obj => {
-                if (obj.geometry && !disposedGeometry.has(obj.geometry)) {
+                const isSprite = !!(obj && (obj.isSprite || (T && T.Sprite && obj instanceof T.Sprite)));
+                if (!isSprite && obj.geometry && !disposedGeometry.has(obj.geometry)) {
                     disposedGeometry.add(obj.geometry);
                     obj.geometry.dispose();
                 }
@@ -1543,6 +1566,31 @@
         }
 
         /**
+         * Return the first real-chart event index that can affect this frame.
+         *
+         * @param {object} projection - Current chart projection.
+         * @param {number} t - Current chart time.
+         * @returns {number} Start index for visible-event scanning.
+         */
+        function visibleEventStartIndex(projection, t) {
+            const events = projection && projection.hitEvents ? projection.hitEvents : [];
+            const minTime = t - NOTE_BEHIND_SEC;
+            const mustRebase = renderCursorProjection !== projection
+                || t < renderCursorTime
+                || Math.abs(t - renderCursorTime) > RENDER_CURSOR_REBASE_SEC;
+            if (mustRebase) {
+                renderCursorProjection = projection;
+                renderCursorIndex = lowerBoundHitEvents(events, minTime);
+            } else {
+                while (renderCursorIndex < events.length && events[renderCursorIndex].t < minTime) {
+                    renderCursorIndex++;
+                }
+            }
+            renderCursorTime = t;
+            return renderCursorIndex;
+        }
+
+        /**
          * Add a visible note mesh for one event at a time offset from the hit plane.
          *
          * @param {object} event - Projected hit event.
@@ -1609,12 +1657,14 @@
             if (!projection) return;
 
             const realHits = bundle && bundle.drumTab && Array.isArray(bundle.drumTab.hits) && bundle.drumTab.hits.length > 0;
-            const t = realHits && typeof bundle.currentTime === 'number'
+            const t = realHits && Number.isFinite(bundle.currentTime)
                 ? bundle.currentTime
                 : nowSec() % DEMO_PATTERN_SEC;
             const events = projection.hitEvents;
             if (realHits) {
-                for (const event of events) {
+                const startIndex = visibleEventStartIndex(projection, t);
+                for (let i = startIndex; i < events.length; i++) {
+                    const event = events[i];
                     const dt = event.t - t;
                     if (dt > NOTE_AHEAD_SEC) break;
                     if (dt < -NOTE_BEHIND_SEC) continue;
@@ -1624,6 +1674,9 @@
                 return;
             }
 
+            renderCursorProjection = null;
+            renderCursorIndex = 0;
+            renderCursorTime = -Infinity;
             for (let cycle = -1; cycle <= 1; cycle++) {
                 const base = cycle * DEMO_PATTERN_SEC;
                 for (const event of events) {
@@ -1659,6 +1712,9 @@
             noteMeshPool = [];
             cachedDrumTab = null;
             cachedProjection = null;
+            renderCursorProjection = null;
+            renderCursorIndex = 0;
+            renderCursorTime = -Infinity;
             activeSurfaceLayoutKey = null;
             visibleNoteCount = 0;
         }
@@ -1781,6 +1837,7 @@
         buildPieceToTriggerMap,
         buildSurfaceLayout,
         padProfileLayoutKey,
+        lowerBoundHitEvents,
         hitVariant,
         normalizeHit,
         groupHitEvents,

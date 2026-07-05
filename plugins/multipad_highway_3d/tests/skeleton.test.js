@@ -254,6 +254,23 @@ test('surface layout renders every accepted pedal and trigger surface', () => {
     assert.equal(rightEdge.x > rightOutline.x, true);
 });
 
+test('hit event lower bound starts real-chart scans near the visible window', () => {
+    const t = loadFactory().__test;
+    const events = [
+        { t: 0.00 },
+        { t: 0.25 },
+        { t: 0.50 },
+        { t: 1.00 },
+        { t: 2.00 },
+    ];
+
+    assert.equal(t.lowerBoundHitEvents(events, -1), 0);
+    assert.equal(t.lowerBoundHitEvents(events, 0.25), 1);
+    assert.equal(t.lowerBoundHitEvents(events, 0.26), 2);
+    assert.equal(t.lowerBoundHitEvents(events, 3), events.length);
+    assert.equal(t.lowerBoundHitEvents(null, 0), 0);
+});
+
 test('invalid pad profile dimensions reject the profile and project with the default', () => {
     const t = loadFactory().__test;
     const badProfile = {
