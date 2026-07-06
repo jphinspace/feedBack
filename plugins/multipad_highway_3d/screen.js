@@ -259,6 +259,10 @@
         sceneTheme: 'default',
         glowStrength: 0.5,
         feedbackIntensity: 0.7,
+        timingColors: true,
+        hitSparks: true,
+        cinematicLighting: true,
+        backgroundAmbience: true,
     });
 
     const SCENE_THEMES = Object.freeze({
@@ -339,6 +343,10 @@
         sceneTheme: 'multipad_h3d_scene_theme',
         glowStrength: 'multipad_h3d_glow_strength',
         feedbackIntensity: 'multipad_h3d_feedback_intensity',
+        timingColors: 'multipad_h3d_timing_colors',
+        hitSparks: 'multipad_h3d_hit_sparks',
+        cinematicLighting: 'multipad_h3d_cinematic_lighting',
+        backgroundAmbience: 'multipad_h3d_background_ambience',
     });
 
     /**
@@ -924,6 +932,11 @@
         const showLabels = readStorageValue(LS_KEYS.showLabels);
         if (showLabels === '1' || showLabels === 'true') settings.showLabels = true;
         else if (showLabels === '0' || showLabels === 'false') settings.showLabels = false;
+        for (const key of ['timingColors', 'hitSparks', 'cinematicLighting', 'backgroundAmbience']) {
+            const raw = readStorageValue(LS_KEYS[key]);
+            if (raw === '1' || raw === 'true') settings[key] = true;
+            else if (raw === '0' || raw === 'false') settings[key] = false;
+        }
 
         const hitGroupWindowMs = readStorageValue(LS_KEYS.hitGroupWindowMs);
         if (hitGroupWindowMs !== null) {
@@ -961,6 +974,11 @@
         if (key === 'pedalProfileId' && value !== DEFAULT_PEDAL_PROFILE.id) return;
         if (key === 'triggerProfileId' && value !== DEFAULT_TRIGGER_PROFILE.id) return;
         if (key === 'showLabels') {
+            writeStorageValue(LS_KEYS[key], value ? '1' : '0');
+            settingsVersion++;
+            return;
+        }
+        if (key === 'timingColors' || key === 'hitSparks' || key === 'cinematicLighting' || key === 'backgroundAmbience') {
             writeStorageValue(LS_KEYS[key], value ? '1' : '0');
             settingsVersion++;
             return;
@@ -1494,6 +1512,7 @@
         }
 
         function timingHex(event) {
+            if (!activeSettings.timingColors) return TIMING_OK_COLOR;
             const status = normalizeTimingStatus(event && event.timingStatus);
             if (status === 'EARLY') return TIMING_EARLY_COLOR;
             if (status === 'LATE') return TIMING_LATE_COLOR;
@@ -1501,7 +1520,7 @@
         }
 
         function sparkBurst(x, y, z, hex, count) {
-            if (!sparkPoints || !sparkLife || count <= 0) return;
+            if (!activeSettings.hitSparks || !sparkPoints || !sparkLife || count <= 0) return;
             const r = ((hex >> 16) & 255) / 255;
             const g = ((hex >> 8) & 255) / 255;
             const b = (hex & 255) / 255;
@@ -1582,9 +1601,11 @@
         function updateSettingsFromStorage() {
             const next = readSettings();
             const glowChanged = !activeSettings || next.glowStrength !== activeSettings.glowStrength;
+            const cinematicChanged = !activeSettings || next.cinematicLighting !== activeSettings.cinematicLighting;
             activeSettings = next;
             if (labelGroup) labelGroup.visible = !!activeSettings.showLabels;
             if (camera) applyCameraSettings();
+            if (cinematicChanged) applyCinematicLighting();
             if (glowChanged) {
                 for (const mat of noteMaterials.values()) {
                     if (mat && typeof mat.dispose === 'function') mat.dispose();
@@ -1958,6 +1979,8 @@
 
         function updateBackground(dt, t) {
             if (!bgParticles) return;
+            bgParticles.points.visible = !!activeSettings.backgroundAmbience;
+            if (!activeSettings.backgroundAmbience) return;
             const positions = bgParticles.geo.attributes.position.array;
             const dx = dt * 0.10;
             for (let i = 0; i < bgParticles.count; i++) {
@@ -1969,8 +1992,8 @@
         }
 
         function applyCinematicLighting() {
-            if (ambientLight) ambientLight.intensity = 0.30;
-            if (keyLight) keyLight.intensity = 1.20;
+            if (ambientLight) ambientLight.intensity = activeSettings.cinematicLighting ? 0.30 : 0.40;
+            if (keyLight) keyLight.intensity = activeSettings.cinematicLighting ? 1.20 : 1.00;
         }
 
         /**
@@ -2514,6 +2537,10 @@
                     cameraAngle: activeSettings.cameraAngle,
                     sceneTheme: activeSettings.sceneTheme,
                     feedbackIntensity: activeSettings.feedbackIntensity,
+                    timingColors: activeSettings.timingColors,
+                    hitSparks: activeSettings.hitSparks,
+                    cinematicLighting: activeSettings.cinematicLighting,
+                    backgroundAmbience: activeSettings.backgroundAmbience,
                 };
             },
         };

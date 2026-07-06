@@ -83,6 +83,22 @@
                 Hit feedback intensity <span id="multipad-h3d-feedback-val" class="text-gray-500 font-mono">0.70</span>
             </label>
             <input type="range" id="multipad-h3d-feedback" min="0" max="1" step="0.05" value="0.7" class="w-full">
+            <label for="multipad-h3d-timing-colors" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-3">
+                <input type="checkbox" id="multipad-h3d-timing-colors" checked>
+                Timing colors
+            </label>
+            <label for="multipad-h3d-hit-sparks" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-2">
+                <input type="checkbox" id="multipad-h3d-hit-sparks" checked>
+                Hit sparks
+            </label>
+            <label for="multipad-h3d-cinematic" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-2">
+                <input type="checkbox" id="multipad-h3d-cinematic" checked>
+                Cinematic lighting
+            </label>
+            <label for="multipad-h3d-background" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-2">
+                <input type="checkbox" id="multipad-h3d-background" checked>
+                Background particles
+            </label>
 
             <label for="multipad-h3d-hit-window" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">
                 Hit group window <span id="multipad-h3d-hit-window-val" class="text-gray-500 font-mono">8</span> ms
@@ -489,7 +505,7 @@
         }
         function hydrateDisplayControls() {
             const settings = (window.multipadH3dGetSettings && window.multipadH3dGetSettings())
-                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7 };
+                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7, timingColors: true, hitSparks: true, cinematicLighting: true, backgroundAmbience: true };
             const show = document.getElementById('multipad-h3d-show-labels');
             const range = document.getElementById('multipad-h3d-hit-window');
             const label = document.getElementById('multipad-h3d-hit-window-val');
@@ -500,6 +516,10 @@
             const glowLabel = document.getElementById('multipad-h3d-glow-val');
             const feedback = document.getElementById('multipad-h3d-feedback');
             const feedbackLabel = document.getElementById('multipad-h3d-feedback-val');
+            const timingColors = document.getElementById('multipad-h3d-timing-colors');
+            const hitSparks = document.getElementById('multipad-h3d-hit-sparks');
+            const cinematic = document.getElementById('multipad-h3d-cinematic');
+            const background = document.getElementById('multipad-h3d-background');
 
             theme.innerHTML = '';
             const themes = window.multipadH3dGetSceneThemes ? window.multipadH3dGetSceneThemes() : ['default'];
@@ -520,8 +540,16 @@
             glowLabel.textContent = parseFloat(settings.glowStrength).toFixed(2);
             feedback.value = String(settings.feedbackIntensity);
             feedbackLabel.textContent = parseFloat(settings.feedbackIntensity).toFixed(2);
+            timingColors.checked = settings.timingColors !== false;
+            hitSparks.checked = settings.hitSparks !== false;
+            cinematic.checked = settings.cinematicLighting !== false;
+            background.checked = settings.backgroundAmbience !== false;
 
             show.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('showLabels', show.checked);
+            timingColors.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('timingColors', timingColors.checked);
+            hitSparks.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('hitSparks', hitSparks.checked);
+            cinematic.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('cinematicLighting', cinematic.checked);
+            background.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('backgroundAmbience', background.checked);
             range.oninput = () => {
                 label.textContent = range.value;
                 window.multipadH3dSetSetting && window.multipadH3dSetSetting('hitGroupWindowMs', range.value);

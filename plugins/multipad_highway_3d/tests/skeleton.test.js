@@ -98,6 +98,10 @@ test('renderer lifecycle exposes WebGL state and tears down idempotently without
         cameraAngle: 0.35,
         sceneTheme: 'default',
         feedbackIntensity: 0.7,
+        timingColors: true,
+        hitSparks: true,
+        cinematicLighting: true,
+        backgroundAmbience: true,
     });
     renderer.destroy();
     renderer.destroy();
@@ -535,6 +539,10 @@ test('settings survive missing and corrupt localStorage', () => {
         multipad_h3d_scene_theme: 'forest',
         multipad_h3d_glow_strength: '-1',
         multipad_h3d_feedback_intensity: '0.25',
+        multipad_h3d_timing_colors: '0',
+        multipad_h3d_hit_sparks: 'false',
+        multipad_h3d_cinematic_lighting: '1',
+        multipad_h3d_background_ambience: 'bad',
     });
     const settings = factory.__test.readSettings();
     assert.equal(settings.padProfileId, 'generic-3x3');
@@ -546,15 +554,27 @@ test('settings survive missing and corrupt localStorage', () => {
     assert.equal(settings.sceneTheme, 'forest');
     assert.equal(settings.glowStrength, 0);
     assert.equal(settings.feedbackIntensity, 0.25);
+    assert.equal(settings.timingColors, false);
+    assert.equal(settings.hitSparks, false);
+    assert.equal(settings.cinematicLighting, true);
+    assert.equal(settings.backgroundAmbience, true);
 
     factory.__test.writeSetting('hitGroupWindowMs', -1);
     factory.__test.writeSetting('showLabels', true);
+    factory.__test.writeSetting('timingColors', true);
+    factory.__test.writeSetting('hitSparks', true);
+    factory.__test.writeSetting('cinematicLighting', false);
+    factory.__test.writeSetting('backgroundAmbience', false);
     factory.__test.writeSetting('cameraAngle', 0.65);
     factory.__test.writeSetting('sceneTheme', 'charcoal');
     factory.__test.writeSetting('glowStrength', 1.5);
     factory.__test.writeSetting('feedbackIntensity', -1);
     assert.equal(store.get('multipad_h3d_hit_group_window_ms'), '0');
     assert.equal(store.get('multipad_h3d_show_labels'), '1');
+    assert.equal(store.get('multipad_h3d_timing_colors'), '1');
+    assert.equal(store.get('multipad_h3d_hit_sparks'), '1');
+    assert.equal(store.get('multipad_h3d_cinematic_lighting'), '0');
+    assert.equal(store.get('multipad_h3d_background_ambience'), '0');
     assert.equal(store.get('multipad_h3d_camera_angle'), '0.65');
     assert.equal(store.get('multipad_h3d_scene_theme'), 'charcoal');
     assert.equal(store.get('multipad_h3d_glow_strength'), '1');
