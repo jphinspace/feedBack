@@ -64,7 +64,7 @@
         </div>
 
         <div class="border-t border-gray-800 pt-4">
-            <h4 class="text-xs font-medium text-gray-300 mb-2">Display</h4>
+            <h4 class="text-xs font-medium text-gray-300 mb-2">Graphics</h4>
             <label for="multipad-h3d-camera" class="text-xs font-medium text-gray-400 mb-1 block">
                 Camera angle <span id="multipad-h3d-camera-val" class="text-gray-500 font-mono">0.35</span>
             </label>
@@ -95,10 +95,18 @@
                 <input type="checkbox" id="multipad-h3d-cinematic" checked>
                 Cinematic lighting
             </label>
-            <label for="multipad-h3d-background" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-2">
-                <input type="checkbox" id="multipad-h3d-background" checked>
-                Background particles
+            <label for="multipad-h3d-background-style" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">Background ambience</label>
+            <select id="multipad-h3d-background-style"
+                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                <option value="off">Off</option>
+                <option value="particles">Particles</option>
+                <option value="lights">Stage lights</option>
+                <option value="geometric">Geometric</option>
+            </select>
+            <label for="multipad-h3d-background-intensity" class="text-xs font-medium text-gray-400 mb-1 mt-2 block">
+                Ambience intensity <span id="multipad-h3d-background-intensity-val" class="text-gray-500 font-mono">0.50</span>
             </label>
+            <input type="range" id="multipad-h3d-background-intensity" min="0" max="1" step="0.05" value="0.5" class="w-full">
 
             <label for="multipad-h3d-hit-window" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">
                 Hit group window <span id="multipad-h3d-hit-window-val" class="text-gray-500 font-mono">8</span> ms
@@ -505,7 +513,7 @@
         }
         function hydrateDisplayControls() {
             const settings = (window.multipadH3dGetSettings && window.multipadH3dGetSettings())
-                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7, timingColors: true, hitSparks: true, cinematicLighting: true, backgroundAmbience: true };
+                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7, timingColors: true, hitSparks: true, cinematicLighting: true, backgroundStyle: 'particles', backgroundIntensity: 0.5 };
             const show = document.getElementById('multipad-h3d-show-labels');
             const range = document.getElementById('multipad-h3d-hit-window');
             const label = document.getElementById('multipad-h3d-hit-window-val');
@@ -519,7 +527,9 @@
             const timingColors = document.getElementById('multipad-h3d-timing-colors');
             const hitSparks = document.getElementById('multipad-h3d-hit-sparks');
             const cinematic = document.getElementById('multipad-h3d-cinematic');
-            const background = document.getElementById('multipad-h3d-background');
+            const backgroundStyle = document.getElementById('multipad-h3d-background-style');
+            const backgroundIntensity = document.getElementById('multipad-h3d-background-intensity');
+            const backgroundIntensityLabel = document.getElementById('multipad-h3d-background-intensity-val');
 
             theme.innerHTML = '';
             const themes = window.multipadH3dGetSceneThemes ? window.multipadH3dGetSceneThemes() : ['default'];
@@ -543,13 +553,19 @@
             timingColors.checked = settings.timingColors !== false;
             hitSparks.checked = settings.hitSparks !== false;
             cinematic.checked = settings.cinematicLighting !== false;
-            background.checked = settings.backgroundAmbience !== false;
+            backgroundStyle.value = settings.backgroundStyle || 'particles';
+            backgroundIntensity.value = String(settings.backgroundIntensity);
+            backgroundIntensityLabel.textContent = parseFloat(settings.backgroundIntensity).toFixed(2);
 
             show.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('showLabels', show.checked);
             timingColors.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('timingColors', timingColors.checked);
             hitSparks.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('hitSparks', hitSparks.checked);
             cinematic.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('cinematicLighting', cinematic.checked);
-            background.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('backgroundAmbience', background.checked);
+            backgroundStyle.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('backgroundStyle', backgroundStyle.value);
+            backgroundIntensity.oninput = () => {
+                backgroundIntensityLabel.textContent = parseFloat(backgroundIntensity.value).toFixed(2);
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('backgroundIntensity', backgroundIntensity.value);
+            };
             range.oninput = () => {
                 label.textContent = range.value;
                 window.multipadH3dSetSetting && window.multipadH3dSetSetting('hitGroupWindowMs', range.value);

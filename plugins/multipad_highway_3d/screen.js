@@ -262,7 +262,8 @@
         timingColors: true,
         hitSparks: true,
         cinematicLighting: true,
-        backgroundAmbience: true,
+        backgroundStyle: 'particles',
+        backgroundIntensity: 0.5,
     });
 
     const SCENE_THEMES = Object.freeze({
@@ -270,7 +271,16 @@
         midnight: Object.freeze({ clear: 0x050812, fog: 0x0b1220, floor: 0x060a10, pad: 0x111827, edge: 0x334155, tunnel: 0x1e3a5f }),
         charcoal: Object.freeze({ clear: 0x0d0f12, fog: 0x171a1f, floor: 0x090b0e, pad: 0x20242a, edge: 0x525866, tunnel: 0x333a45 }),
         forest: Object.freeze({ clear: 0x07110d, fog: 0x102019, floor: 0x07100b, pad: 0x14251d, edge: 0x3f6b55, tunnel: 0x214736 }),
+        deeppurple: Object.freeze({ clear: 0x140a1e, fog: 0x140a1e, floor: 0x0b0610, pad: 0x1f1430, edge: 0x6d4ed8, tunnel: 0x3a1f6e }),
+        warmslate: Object.freeze({ clear: 0x1c130b, fog: 0x1c130b, floor: 0x0e0805, pad: 0x24180e, edge: 0x9a6b2f, tunnel: 0x5e3a12 }),
+        deepfocus: Object.freeze({ clear: 0x0c0c0d, fog: 0x0c0c0d, floor: 0x060606, pad: 0x101416, edge: 0x4fb3d4, tunnel: 0x2f7fa0 }),
+        deepsea: Object.freeze({ clear: 0x06222b, fog: 0x06222b, floor: 0x03141a, pad: 0x082a31, edge: 0x37a3ac, tunnel: 0x0e5a63 }),
+        cathode: Object.freeze({ clear: 0x140b03, fog: 0x140b03, floor: 0x0c0702, pad: 0x201409, edge: 0xc58a2a, tunnel: 0x6e4a0e }),
+        cathodegreen: Object.freeze({ clear: 0x07301a, fog: 0x07301a, floor: 0x031a0c, pad: 0x082716, edge: 0x2fba62, tunnel: 0x0e6e2a }),
+        hearth: Object.freeze({ clear: 0x280806, fog: 0x280806, floor: 0x1a0606, pad: 0x2e100d, edge: 0xd45a32, tunnel: 0x7a2410 }),
     });
+    const BACKGROUND_STYLES = Object.freeze(['off', 'particles', 'lights', 'geometric']);
+    const BACKGROUND_STYLE_SET = new Set(BACKGROUND_STYLES);
 
     const PIECE_PALETTE_IDX = Object.freeze({
         kick: -1,
@@ -346,6 +356,8 @@
         timingColors: 'multipad_h3d_timing_colors',
         hitSparks: 'multipad_h3d_hit_sparks',
         cinematicLighting: 'multipad_h3d_cinematic_lighting',
+        backgroundStyle: 'multipad_h3d_background_style',
+        backgroundIntensity: 'multipad_h3d_background_intensity',
         backgroundAmbience: 'multipad_h3d_background_ambience',
     });
 
@@ -932,10 +944,18 @@
         const showLabels = readStorageValue(LS_KEYS.showLabels);
         if (showLabels === '1' || showLabels === 'true') settings.showLabels = true;
         else if (showLabels === '0' || showLabels === 'false') settings.showLabels = false;
-        for (const key of ['timingColors', 'hitSparks', 'cinematicLighting', 'backgroundAmbience']) {
+        for (const key of ['timingColors', 'hitSparks', 'cinematicLighting']) {
             const raw = readStorageValue(LS_KEYS[key]);
             if (raw === '1' || raw === 'true') settings[key] = true;
             else if (raw === '0' || raw === 'false') settings[key] = false;
+        }
+        const backgroundStyle = readStorageValue(LS_KEYS.backgroundStyle);
+        if (BACKGROUND_STYLE_SET.has(backgroundStyle)) {
+            settings.backgroundStyle = backgroundStyle;
+        } else {
+            const legacyBackground = readStorageValue(LS_KEYS.backgroundAmbience);
+            if (legacyBackground === '0' || legacyBackground === 'false') settings.backgroundStyle = 'off';
+            else if (legacyBackground === '1' || legacyBackground === 'true') settings.backgroundStyle = 'particles';
         }
 
         const hitGroupWindowMs = readStorageValue(LS_KEYS.hitGroupWindowMs);
@@ -953,6 +973,9 @@
 
         const feedbackIntensity = readStorageValue(LS_KEYS.feedbackIntensity);
         if (feedbackIntensity !== null) settings.feedbackIntensity = clampNumber(feedbackIntensity, 0, 1, DEFAULT_SETTINGS.feedbackIntensity);
+
+        const backgroundIntensity = readStorageValue(LS_KEYS.backgroundIntensity);
+        if (backgroundIntensity !== null) settings.backgroundIntensity = clampNumber(backgroundIntensity, 0, 1, DEFAULT_SETTINGS.backgroundIntensity);
         return settings;
     }
 
@@ -978,7 +1001,7 @@
             settingsVersion++;
             return;
         }
-        if (key === 'timingColors' || key === 'hitSparks' || key === 'cinematicLighting' || key === 'backgroundAmbience') {
+        if (key === 'timingColors' || key === 'hitSparks' || key === 'cinematicLighting') {
             writeStorageValue(LS_KEYS[key], value ? '1' : '0');
             settingsVersion++;
             return;
@@ -990,6 +1013,17 @@
         }
         if (key === 'cameraAngle' || key === 'glowStrength' || key === 'feedbackIntensity') {
             writeStorageValue(LS_KEYS[key], String(clampNumber(value, 0, 1, DEFAULT_SETTINGS[key])));
+            settingsVersion++;
+            return;
+        }
+        if (key === 'backgroundIntensity') {
+            writeStorageValue(LS_KEYS[key], String(clampNumber(value, 0, 1, DEFAULT_SETTINGS.backgroundIntensity)));
+            settingsVersion++;
+            return;
+        }
+        if (key === 'backgroundStyle') {
+            const id = BACKGROUND_STYLE_SET.has(value) ? value : DEFAULT_SETTINGS.backgroundStyle;
+            writeStorageValue(LS_KEYS[key], id);
             settingsVersion++;
             return;
         }
@@ -1398,7 +1432,8 @@
         let ambientLight = null;
         let keyLight = null;
         let bgGroup = null;
-        let bgParticles = null;
+        let bgState = null;
+        let activeBackgroundKey = '';
         let activeFlashes = [];
         let flashedEventKeys = new Set();
         let flashProjection = null;
@@ -1602,10 +1637,12 @@
             const next = readSettings();
             const glowChanged = !activeSettings || next.glowStrength !== activeSettings.glowStrength;
             const cinematicChanged = !activeSettings || next.cinematicLighting !== activeSettings.cinematicLighting;
+            const backgroundChanged = !activeSettings || next.backgroundStyle !== activeSettings.backgroundStyle || next.backgroundIntensity !== activeSettings.backgroundIntensity;
             activeSettings = next;
             if (labelGroup) labelGroup.visible = !!activeSettings.showLabels;
             if (camera) applyCameraSettings();
             if (cinematicChanged) applyCinematicLighting();
+            if (backgroundChanged) buildBackground();
             if (glowChanged) {
                 for (const mat of noteMaterials.values()) {
                     if (mat && typeof mat.dispose === 'function') mat.dispose();
@@ -1950,45 +1987,122 @@
         }
 
         function buildBackground() {
+            if (!scene) return;
+            if (bgGroup) {
+                disposeObjectTree(bgGroup);
+                scene.remove(bgGroup);
+            }
             bgGroup = new T.Group();
             bgGroup.renderOrder = -1;
             scene.add(bgGroup);
-            const count = 140;
-            const positions = new Float32Array(count * 3);
-            for (let i = 0; i < count; i++) {
-                positions[i * 3] = (Math.random() - 0.5) * 14;
-                positions[i * 3 + 1] = Math.random() * 5.8 - 0.4;
-                positions[i * 3 + 2] = -12 - Math.random() * 18;
+            bgState = null;
+            const style = BACKGROUND_STYLE_SET.has(activeSettings.backgroundStyle) ? activeSettings.backgroundStyle : DEFAULT_SETTINGS.backgroundStyle;
+            const intensity = clampNumber(activeSettings.backgroundIntensity, 0, 1, DEFAULT_SETTINGS.backgroundIntensity);
+            activeBackgroundKey = style + ':' + intensity;
+            if (style === 'off') return;
+
+            if (style === 'particles') {
+                const count = Math.max(20, Math.floor(80 + 200 * intensity));
+                const positions = new Float32Array(count * 3);
+                for (let i = 0; i < count; i++) {
+                    positions[i * 3] = (Math.random() - 0.5) * 14;
+                    positions[i * 3 + 1] = Math.random() * 5.8 - 0.4;
+                    positions[i * 3 + 2] = -12 - Math.random() * 18;
+                }
+                const geo = new T.BufferGeometry();
+                geo.setAttribute('position', new T.BufferAttribute(positions, 3).setUsage(T.DynamicDrawUsage));
+                const mat = new T.PointsMaterial({
+                    color: 0xa0c0ff,
+                    size: 0.035,
+                    transparent: true,
+                    opacity: 0.58,
+                    blending: T.AdditiveBlending,
+                    depthWrite: false,
+                    sizeAttenuation: true,
+                });
+                const points = new T.Points(geo, mat);
+                points.frustumCulled = false;
+                points.renderOrder = -1;
+                bgGroup.add(points);
+                bgState = { style, points, geo, mat, count };
+                return;
             }
-            const geo = new T.BufferGeometry();
-            geo.setAttribute('position', new T.BufferAttribute(positions, 3).setUsage(T.DynamicDrawUsage));
-            const mat = new T.PointsMaterial({
-                color: 0xa0c0ff,
-                size: 0.035,
-                transparent: true,
-                opacity: 0.58,
-                blending: T.AdditiveBlending,
-                depthWrite: false,
-                sizeAttenuation: true,
-            });
-            bgParticles = { points: new T.Points(geo, mat), geo, mat, count };
-            bgParticles.points.frustumCulled = false;
-            bgParticles.points.renderOrder = -1;
-            bgGroup.add(bgParticles.points);
+
+            if (style === 'lights') {
+                const lights = [];
+                const count = Math.floor(6 + 8 * intensity);
+                for (let i = 0; i < count; i++) {
+                    const geo = new T.PlaneGeometry(0.22, 0.22);
+                    const mat = new T.MeshBasicMaterial({
+                        color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+                        transparent: true,
+                        opacity: 0.55,
+                        blending: T.AdditiveBlending,
+                        depthWrite: false,
+                    });
+                    const mesh = new T.Mesh(geo, mat);
+                    mesh.renderOrder = -1;
+                    mesh.position.set((Math.random() - 0.5) * 11, Math.random() * 4.8 + 0.2, -13 - Math.random() * 17);
+                    bgGroup.add(mesh);
+                    lights.push({ mesh, geo, mat, baseScale: 1 + Math.random() * 0.5, phase: Math.random() * Math.PI * 2 });
+                }
+                bgState = { style, lights };
+                return;
+            }
+
+            if (style === 'geometric') {
+                const meshes = [];
+                const opacity = 0.45 + 0.25 * intensity;
+                const ico = new T.Mesh(
+                    new T.IcosahedronGeometry(0.65, 1),
+                    new T.MeshBasicMaterial({ color: 0x6080c0, wireframe: true, transparent: true, opacity, depthWrite: false })
+                );
+                ico.position.set(-3.0, 3.5, -18);
+                ico.renderOrder = -1;
+                bgGroup.add(ico);
+                meshes.push(ico);
+
+                const torus = new T.Mesh(
+                    new T.TorusGeometry(0.48, 0.08, 6, 12),
+                    new T.MeshBasicMaterial({ color: 0xc06080, wireframe: true, transparent: true, opacity: opacity * 0.9, depthWrite: false })
+                );
+                torus.position.set(3.2, 2.7, -20);
+                torus.renderOrder = -1;
+                bgGroup.add(torus);
+                meshes.push(torus);
+                bgState = { style, meshes };
+            }
         }
 
         function updateBackground(dt, t) {
-            if (!bgParticles) return;
-            bgParticles.points.visible = !!activeSettings.backgroundAmbience;
-            if (!activeSettings.backgroundAmbience) return;
-            const positions = bgParticles.geo.attributes.position.array;
-            const dx = dt * 0.10;
-            for (let i = 0; i < bgParticles.count; i++) {
-                positions[i * 3] += dx;
-                if (positions[i * 3] > 7) positions[i * 3] -= 14;
+            const style = BACKGROUND_STYLE_SET.has(activeSettings.backgroundStyle) ? activeSettings.backgroundStyle : DEFAULT_SETTINGS.backgroundStyle;
+            const intensity = clampNumber(activeSettings.backgroundIntensity, 0, 1, DEFAULT_SETTINGS.backgroundIntensity);
+            const key = style + ':' + intensity;
+            if (key !== activeBackgroundKey) buildBackground();
+            if (!bgState) return;
+            if (bgState.style === 'particles') {
+                const positions = bgState.geo.attributes.position.array;
+                const dx = dt * 0.10;
+                for (let i = 0; i < bgState.count; i++) {
+                    positions[i * 3] += dx;
+                    if (positions[i * 3] > 7) positions[i * 3] -= 14;
+                }
+                bgState.geo.attributes.position.needsUpdate = true;
+                bgState.mat.opacity = 0.46 + Math.sin(t * 0.75) * 0.08;
+            } else if (bgState.style === 'lights') {
+                for (const light of bgState.lights) {
+                    const pulse = 1 + Math.sin(t * 1.5 + light.phase) * 0.2;
+                    light.mesh.scale.set(light.baseScale * pulse, light.baseScale * pulse, 1);
+                    light.mat.opacity = 0.55 + Math.sin(t * 1.1 + light.phase) * 0.12;
+                }
+            } else if (bgState.style === 'geometric') {
+                const pulse = 1 + Math.sin(t * 1.2) * 0.08;
+                for (const mesh of bgState.meshes) {
+                    mesh.rotation.x += dt * 0.06;
+                    mesh.rotation.y += dt * 0.08;
+                    mesh.scale.setScalar(pulse);
+                }
             }
-            bgParticles.geo.attributes.position.needsUpdate = true;
-            bgParticles.mat.opacity = 0.46 + Math.sin(t * 0.75) * 0.08;
         }
 
         function applyCinematicLighting() {
@@ -2421,7 +2535,8 @@
             ambientLight = null;
             keyLight = null;
             bgGroup = null;
-            bgParticles = null;
+            bgState = null;
+            activeBackgroundKey = '';
             activeFlashes = [];
             flashedEventKeys = new Set();
             flashProjection = null;
@@ -2540,7 +2655,8 @@
                     timingColors: activeSettings.timingColors,
                     hitSparks: activeSettings.hitSparks,
                     cinematicLighting: activeSettings.cinematicLighting,
-                    backgroundAmbience: activeSettings.backgroundAmbience,
+                    backgroundStyle: activeSettings.backgroundStyle,
+                    backgroundIntensity: activeSettings.backgroundIntensity,
                 };
             },
         };
