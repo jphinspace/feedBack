@@ -200,6 +200,17 @@ Phase 5 output:
 
 Phase 6: Polish visual feedback. Add pad flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, pedal surface pulses, hit group cues, and shared background/cinematic helpers where they make sense.
 
+Phase 6 implementation note:
+
+- For this plugin's MVP, articulations/cues are intentionally ignored. Ghost,
+  accent, flam, open, and bell flags route as ordinary hits on the resolved
+  pad, pedal, or trigger surface.
+- Pad flashes, timing colors, sparks, pedal pulses, and cinematic/background
+  helpers should match `drum_highway_3d` behavior where a comparable multipad
+  surface exists. Without MIDI/scoring ownership, timing defaults to the same
+  on-time green used by `drum_highway_3d` for OK/unknown timing; EARLY/LATE
+  timing fields are accepted when supplied by chart/test data.
+
 Phase 7: Stabilize the visual MVP. Run focused tests, verify desktop/mobile/splitscreen framing, tune performance, update docs/screenshots, and make sure the plugin works without MIDI hardware.
 
 Phase 8, post-MVP: Add MIDI/scoring only if needed. If this plugin takes ownership of input or scoring later, connect to the core `midi-input` domain, mirror `drum_highway_3d` MIDI-to-piece behavior, implement hit/miss matching by routed pad/pedal source or render surface rather than raw MIDI note or original piece id, then consider `note-detection`, stats, progression, synth feedback, and scoring diagnostics.

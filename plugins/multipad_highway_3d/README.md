@@ -15,12 +15,13 @@ This directory currently contains the Phase 4 MVP renderer from
   `__test`.
 - `screen.js` validates pad and pedal profiles, routes drum-tab hits through
   `projectDrumTab`, preserves drum piece identity while applying pad/pedal
-  fallbacks, classifies hit variants, groups same-window hits, and reads/writes
+  fallbacks, normalizes all articulations to plain multipad hits, groups same-window hits, and reads/writes
   localStorage-backed settings safely.
 - The renderer builds the MVP 3x3 pad grid, per-pad tunnel guides, top/bottom
   pedal surfaces, side outline trigger surfaces, mirrored external trigger
-  center/edge surfaces, pooled note meshes, hit pulses, a demo fallback, and
-  real `bundle.drumTab` rendering.
+  center/edge surfaces, pooled note meshes, timing-colored flashes, sparks,
+  pedal pulses, background particles, a demo fallback, and real
+  `bundle.drumTab` rendering.
 - `settings.html` loads the plugin settings panel without depending on MIDI,
   WebGL, or runtime Tailwind.
 - `assets/thumb.svg` provides the picker thumbnail.

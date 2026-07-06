@@ -320,6 +320,11 @@
     const NOTE_AHEAD_SEC = 3.0;
     const NOTE_BEHIND_SEC = 0.28;
     const HIT_PULSE_SEC = 0.16;
+    const FLASH_MS = 300;
+    const SPARK_COUNT = 192;
+    const TIMING_OK_COLOR = 0x22ff88;
+    const TIMING_EARLY_COLOR = 0x35d6ff;
+    const TIMING_LATE_COLOR = 0xffb84d;
     const DEMO_PATTERN_SEC = 4;
     const RENDER_CURSOR_REBASE_SEC = 0.75;
     /** localStorage keys are namespaced so this plugin never collides with drum_h3d. */
@@ -416,6 +421,34 @@
             else hi = mid;
         }
         return lo;
+    }
+
+    // Build a horizontal gaussian DataTexture for additive flash quads.
+    // Ported from drum_highway_3d/highway_3d so hit-plane flashes share the
+    // same soft falloff instead of reading as solid boxes.
+    function makeGaussTex(ThreeLib, w = 128, sigma = 0.28) {
+        const data = new Uint8Array(w * 4);
+        for (let i = 0; i < w; i++) {
+            const u = i / (w - 1);
+            const d = (u - 0.5) / sigma;
+            const v = Math.exp(-0.5 * d * d);
+            const a = Math.round(v * 255);
+            data[i * 4] = 255;
+            data[i * 4 + 1] = 255;
+            data[i * 4 + 2] = 255;
+            data[i * 4 + 3] = a;
+        }
+        const tex = new ThreeLib.DataTexture(data, w, 1, ThreeLib.RGBAFormat);
+        tex.magFilter = ThreeLib.LinearFilter;
+        tex.minFilter = ThreeLib.LinearFilter;
+        tex.needsUpdate = true;
+        return tex;
+    }
+
+    function normalizeTimingStatus(value) {
+        if (typeof value !== 'string') return '';
+        const status = value.trim().toUpperCase();
+        return status === 'EARLY' || status === 'LATE' || status === 'OK' ? status : '';
     }
 
     /**
@@ -1090,17 +1123,14 @@
     }
 
     /**
-     * Classify a drum-tab hit into the renderer variant used by drum_highway_3d.
+     * Multipad intentionally ignores drum articulations/cues for MVP visuals.
+     * The source piece still routes normally, but every scheduled event renders
+     * as a plain hit on the corresponding pad or outline surface.
      *
-     * @param {object} hit - Raw or normalized drum hit.
-     * @returns {'ghost'|'flam'|'bell'|'accent'|'normal'}
+     * @returns {'normal'}
      */
     function hitVariant(hit) {
-        if (hit && hit.g) return 'ghost';
-        if (hit && hit.f) return 'flam';
-        if (hit && hit.p === 'ride_bell') return 'bell';
-        const v = hit && typeof hit.v === 'number' ? hit.v : 100;
-        if (v >= 100) return 'accent';
+        void hit;
         return 'normal';
     }
 
@@ -1128,6 +1158,7 @@
             flam: !!hit.f,
             variant: hitVariant({ p: piece, v: velocity, g: !!hit.g, f: !!hit.f }),
             open: piece === 'hh_open',
+            timingStatus: normalizeTimingStatus(hit.timingStatus || hit.timing || hit.ts),
         };
     }
 
@@ -1233,6 +1264,7 @@
                     velocity: hit.velocity,
                     variant: hit.variant,
                     open: false,
+                    timingStatus: hit.timingStatus,
                 });
                 continue;
             }
@@ -1251,6 +1283,7 @@
                     velocity: hit.velocity,
                     variant: hit.variant,
                     open: hit.open,
+                    timingStatus: hit.timingStatus,
                 });
                 continue;
             }
@@ -1270,6 +1303,7 @@
                 velocity: hit.velocity,
                 variant: hit.variant,
                 open: hit.open,
+                timingStatus: hit.timingStatus,
             });
         }
 
@@ -1343,6 +1377,24 @@
         let activeSettings = readSettings();
         let activeThemeId = activeSettings.sceneTheme;
         let floorMesh = null;
+        let ambientLight = null;
+        let keyLight = null;
+        let bgGroup = null;
+        let bgParticles = null;
+        let flashTexture = null;
+        let activeFlashes = [];
+        let flashedEventKeys = new Set();
+        let flashProjection = null;
+        let flashTime = -Infinity;
+        let sparkPoints = null;
+        let sparkPos = null;
+        let sparkCol = null;
+        let sparkVel = null;
+        let sparkLife = null;
+        let fxLastWall = 0;
+        let kickPulse = 0;
+        let baseCameraY = 0;
+        let floorFlash = null;
 
         /**
          * Return a monotonic wall-clock time for demo playback.
@@ -1442,26 +1494,87 @@
             return (event && (PIECE_COLORS[event.piece] || PIECE_COLORS[event.routedPiece])) || 0x93c5fd;
         }
 
+        function timingHex(event) {
+            const status = normalizeTimingStatus(event && event.timingStatus);
+            if (status === 'EARLY') return TIMING_EARLY_COLOR;
+            if (status === 'LATE') return TIMING_LATE_COLOR;
+            return TIMING_OK_COLOR;
+        }
+
+        function sparkBurst(x, y, z, hex, count) {
+            if (!sparkPoints || !sparkLife || count <= 0) return;
+            const r = ((hex >> 16) & 255) / 255;
+            const g = ((hex >> 8) & 255) / 255;
+            const b = (hex & 255) / 255;
+            let made = 0;
+            for (let i = 0; i < SPARK_COUNT && made < count; i++) {
+                if (sparkLife[i] > 0) continue;
+                const j = i * 3;
+                const ang = Math.random() * Math.PI * 2;
+                const sp = 0.12 + Math.random() * 0.28;
+                sparkPos[j] = x;
+                sparkPos[j + 1] = y;
+                sparkPos[j + 2] = z;
+                sparkVel[j] = Math.cos(ang) * sp;
+                sparkVel[j + 1] = 0.42 + Math.random() * 0.55;
+                sparkVel[j + 2] = Math.sin(ang) * sp * 0.55;
+                sparkCol[j] = r;
+                sparkCol[j + 1] = g;
+                sparkCol[j + 2] = b;
+                sparkLife[i] = 0.30 + Math.random() * 0.16;
+                made++;
+            }
+        }
+
+        function updateSparks(dt) {
+            if (!sparkPoints || !sparkLife) return;
+            let any = false;
+            const grav = 1.25;
+            for (let i = 0; i < SPARK_COUNT; i++) {
+                if (sparkLife[i] <= 0) continue;
+                const j = i * 3;
+                sparkLife[i] -= dt;
+                if (sparkLife[i] <= 0) {
+                    sparkCol[j] = 0;
+                    sparkCol[j + 1] = 0;
+                    sparkCol[j + 2] = 0;
+                    continue;
+                }
+                any = true;
+                sparkVel[j + 1] -= grav * dt;
+                sparkPos[j] += sparkVel[j] * dt;
+                sparkPos[j + 1] += sparkVel[j + 1] * dt;
+                sparkPos[j + 2] += sparkVel[j + 2] * dt;
+                const fade = 1 - Math.min(1, dt * 3.2);
+                sparkCol[j] *= fade;
+                sparkCol[j + 1] *= fade;
+                sparkCol[j + 2] *= fade;
+            }
+            sparkPoints.geometry.attributes.position.needsUpdate = true;
+            sparkPoints.geometry.attributes.color.needsUpdate = true;
+            sparkPoints.visible = any;
+        }
+
         /**
          * Return a cached material for note meshes.
          *
          * @param {number} colorHex - Three.js hex color.
-         * @param {string} variant - Hit variant such as `normal`, `ghost`, or `accent`.
+         * @param {string} variant - Kept for older tests/callers; ignored for multipad visuals.
          * @returns {object} Three.js material.
          */
         function getNoteMaterial(colorHex, variant) {
-            const key = String(colorHex) + ':' + String(variant || 'normal');
+            void variant;
+            const key = String(colorHex) + ':normal';
             if (noteMaterials.has(key)) return noteMaterials.get(key);
-            const transparent = variant === 'ghost';
             const glow = 0.25 + (activeSettings.glowStrength || 0) * 0.75;
             const material = new T.MeshStandardMaterial({
                 color: colorHex,
                 emissive: colorHex,
-                emissiveIntensity: (variant === 'accent' ? 0.85 : 0.55) * glow,
+                emissiveIntensity: 0.55 * glow,
                 metalness: 0.12,
                 roughness: 0.36,
-                transparent,
-                opacity: transparent ? 0.46 : 0.92,
+                transparent: true,
+                opacity: 0.92,
             });
             noteMaterials.set(key, material);
             return material;
@@ -1512,6 +1625,7 @@
             const a = activeSettings.cameraAngle;
             camera.position.set(0, 2.4 + a * 2.0, 7.8 - a * 2.3);
             camera.lookAt(0, GRID_CENTER_Y + a * 0.2, -7.2 + a * 2.8);
+            baseCameraY = camera.position.y;
         }
 
         /**
@@ -1547,6 +1661,24 @@
             const sprite = new T.Sprite(material);
             sprite.scale.set(width, height, 1);
             return sprite;
+        }
+
+        function createSurfaceFlashMesh(width, height, zOffset) {
+            if (!flashTexture) flashTexture = makeGaussTex(T, 128, 0.28);
+            const geo = new T.PlaneGeometry(width, height);
+            const mat = new T.MeshBasicMaterial({
+                color: TIMING_OK_COLOR,
+                map: flashTexture,
+                transparent: true,
+                opacity: 0,
+                blending: T.AdditiveBlending,
+                depthWrite: false,
+                side: T.DoubleSide,
+            });
+            const mesh = new T.Mesh(geo, mat);
+            mesh.position.set(0, 0, zOffset || 0.06);
+            mesh.renderOrder = 7;
+            return mesh;
         }
 
         /**
@@ -1616,6 +1748,8 @@
             });
             const mesh = new T.Mesh(geo, mat);
             mesh.position.set(x, y, 0);
+            const flashMesh = createSurfaceFlashMesh(w * 1.08, h * 1.7, 0.07);
+            mesh.add(flashMesh);
             group.add(mesh);
 
             const edgeGeo = new T.EdgesGeometry(geo);
@@ -1628,7 +1762,7 @@
             edges.position.copy(mesh.position);
             group.add(edges);
 
-            return { key, x, y, w, h, mesh, material: mat, edgeMaterial: edgeMat, baseOpacity: opacity, baseEmissiveIntensity: 0.05 };
+            return { key, x, y, w, h, mesh, material: mat, edgeMaterial: edgeMat, flashMesh, baseOpacity: opacity, baseEmissiveIntensity: 0.05 };
         }
 
         /**
@@ -1657,6 +1791,8 @@
             });
             const mesh = new T.Mesh(geo, mat);
             mesh.position.set(x, y, 0.018);
+            const flashMesh = createSurfaceFlashMesh(radius * 2.5, radius * 2.5, 0.055);
+            mesh.add(flashMesh);
             group.add(mesh);
 
             const points = [];
@@ -1684,6 +1820,7 @@
                 mesh,
                 material: mat,
                 edgeMaterial: edgeMat,
+                flashMesh,
                 baseOpacity: opacity,
                 baseEmissiveIntensity: 0.12,
             };
@@ -1716,6 +1853,8 @@
             });
             const mesh = new T.Mesh(geo, mat);
             mesh.position.set(x, y, 0.026);
+            const flashMesh = createSurfaceFlashMesh(outerRadius * 2.6, outerRadius * 2.6, 0.055);
+            mesh.add(flashMesh);
             group.add(mesh);
 
             const diameter = outerRadius * 2;
@@ -1727,6 +1866,7 @@
                 h: diameter,
                 mesh,
                 material: mat,
+                flashMesh,
                 baseOpacity: opacity,
                 baseEmissiveIntensity: 0.16,
             };
@@ -1785,6 +1925,51 @@
             }
         }
 
+        function buildBackground() {
+            bgGroup = new T.Group();
+            bgGroup.renderOrder = -1;
+            scene.add(bgGroup);
+            const count = 140;
+            const positions = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                positions[i * 3] = (Math.random() - 0.5) * 14;
+                positions[i * 3 + 1] = Math.random() * 5.8 - 0.4;
+                positions[i * 3 + 2] = -12 - Math.random() * 18;
+            }
+            const geo = new T.BufferGeometry();
+            geo.setAttribute('position', new T.BufferAttribute(positions, 3).setUsage(T.DynamicDrawUsage));
+            const mat = new T.PointsMaterial({
+                color: 0xa0c0ff,
+                size: 0.035,
+                transparent: true,
+                opacity: 0.58,
+                blending: T.AdditiveBlending,
+                depthWrite: false,
+                sizeAttenuation: true,
+            });
+            bgParticles = { points: new T.Points(geo, mat), geo, mat, count };
+            bgParticles.points.frustumCulled = false;
+            bgParticles.points.renderOrder = -1;
+            bgGroup.add(bgParticles.points);
+        }
+
+        function updateBackground(dt, t) {
+            if (!bgParticles) return;
+            const positions = bgParticles.geo.attributes.position.array;
+            const dx = dt * 0.10;
+            for (let i = 0; i < bgParticles.count; i++) {
+                positions[i * 3] += dx;
+                if (positions[i * 3] > 7) positions[i * 3] -= 14;
+            }
+            bgParticles.geo.attributes.position.needsUpdate = true;
+            bgParticles.mat.opacity = 0.46 + Math.sin(t * 0.75) * 0.08;
+        }
+
+        function applyCinematicLighting() {
+            if (ambientLight) ambientLight.intensity = 0.30;
+            if (keyLight) keyLight.intensity = 1.20;
+        }
+
         /**
          * Create the base Three.js scene, camera, lights, floor, and surface grid.
          *
@@ -1800,12 +1985,14 @@
             camera = new T.PerspectiveCamera(44, 1, 0.1, 80);
             applyCameraSettings();
 
-            const ambient = new T.AmbientLight(0x7c8ca8, 0.48);
-            const key = new T.DirectionalLight(0xffffff, 1.15);
-            key.position.set(-3, 6, 5);
+            ambientLight = new T.AmbientLight(0x7c8ca8, 0.40);
+            keyLight = new T.DirectionalLight(0xffffff, 1.00);
+            keyLight.position.set(-3, 6, 5);
             const rim = new T.DirectionalLight(0x67e8f9, 0.65);
             rim.position.set(3, 3, -6);
-            scene.add(ambient, key, rim);
+            scene.add(ambientLight, keyLight, rim);
+            applyCinematicLighting();
+            buildBackground();
 
             floorMesh = new T.Mesh(
                 new T.PlaneGeometry(20, 42),
@@ -1818,6 +2005,45 @@
             floorMesh.rotation.x = -Math.PI / 2;
             floorMesh.position.set(0, -0.05, -9);
             scene.add(floorMesh);
+
+            if (!flashTexture) flashTexture = makeGaussTex(T, 128, 0.28);
+            floorFlash = new T.Mesh(
+                new T.PlaneGeometry(10, 7),
+                new T.MeshBasicMaterial({
+                    color: KICK_COLOR,
+                    map: flashTexture,
+                    transparent: true,
+                    opacity: 0,
+                    blending: T.AdditiveBlending,
+                    depthWrite: false,
+                })
+            );
+            floorFlash.rotation.x = -Math.PI / 2;
+            floorFlash.position.set(0, -0.035, -1.8);
+            floorFlash.renderOrder = 6;
+            scene.add(floorFlash);
+
+            sparkPos = new Float32Array(SPARK_COUNT * 3);
+            sparkCol = new Float32Array(SPARK_COUNT * 3);
+            sparkVel = new Float32Array(SPARK_COUNT * 3);
+            sparkLife = new Float32Array(SPARK_COUNT);
+            const sparkGeo = new T.BufferGeometry();
+            sparkGeo.setAttribute('position', new T.BufferAttribute(sparkPos, 3).setUsage(T.DynamicDrawUsage));
+            sparkGeo.setAttribute('color', new T.BufferAttribute(sparkCol, 3).setUsage(T.DynamicDrawUsage));
+            const sparkMat = new T.PointsMaterial({
+                size: 0.035,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                depthWrite: false,
+                blending: T.AdditiveBlending,
+                sizeAttenuation: true,
+            });
+            sparkPoints = new T.Points(sparkGeo, sparkMat);
+            sparkPoints.frustumCulled = false;
+            sparkPoints.renderOrder = 8;
+            sparkPoints.visible = false;
+            scene.add(sparkPoints);
 
             notesGroup = new T.Group();
             scene.add(notesGroup);
@@ -1922,6 +2148,7 @@
                 surface.material.emissiveIntensity = surface.baseEmissiveIntensity;
                 surface.material.opacity = surface.baseOpacity;
                 surface.mesh.scale.set(1, 1, 1);
+                if (surface.flashMesh) surface.flashMesh.material.opacity = 0;
             }
         }
 
@@ -1977,20 +2204,12 @@
             const x = backX + (surface.x - backX) * progress;
             const y = backY + (surface.y - backY) * progress;
             const color = eventColorForEvent(event);
-            const mesh = acquireNoteMesh(getNoteMaterial(color, event.variant));
+            const mesh = acquireNoteMesh(getNoteMaterial(color, 'normal'));
             const size = 0.55 + progress * 0.45;
-            const accent = event.variant === 'accent' ? 1.12 : 1;
-            const ghost = event.variant === 'ghost' ? 0.78 : 1;
-            const w = surface.w * (event.type === 'pad' ? 0.72 : 0.92) * size * accent;
-            const h = surface.h * (event.type === 'pad' ? 0.52 : 0.86) * size * ghost;
+            const w = surface.w * (event.type === 'pad' ? 0.72 : 0.92) * size;
+            const h = surface.h * (event.type === 'pad' ? 0.52 : 0.86) * size;
             mesh.position.set(x, y, z);
-            mesh.scale.set(w, Math.max(0.045, h), event.variant === 'flam' ? 0.08 : 0.11);
-
-            if (event.variant === 'flam') {
-                const grace = acquireNoteMesh(getNoteMaterial(color, 'ghost'));
-                grace.position.set(x - surface.w * 0.14 * size, y + surface.h * 0.12 * size, z + 0.04);
-                grace.scale.set(w * 0.44, Math.max(0.035, h * 0.5), 0.07);
-            }
+            mesh.scale.set(w, Math.max(0.045, h), 0.11);
         }
 
         /**
@@ -2007,12 +2226,72 @@
             if (pulse <= 0) return;
             const intensity = activeSettings.feedbackIntensity || 0;
             if (intensity <= 0) return;
-            const color = eventColorForEvent(event);
+            const color = timingHex(event);
             surface.material.emissive.setHex(color);
             surface.material.emissiveIntensity = Math.max(surface.material.emissiveIntensity || 0, 0.18 + pulse * 1.4 * intensity);
             surface.material.opacity = Math.max(surface.material.opacity || 0, 0.52 + pulse * 0.42 * intensity);
             const scale = 1 + pulse * intensity * (event.type === 'pad' ? 0.045 : 0.09);
             surface.mesh.scale.set(scale, scale, 1);
+        }
+
+        function eventFlashKey(event, cycleBase) {
+            return [
+                cycleBase || 0,
+                event && event.t,
+                event && event.surfaceId,
+                event && event.piece,
+            ].join(':');
+        }
+
+        function triggerEventFx(event) {
+            const surface = surfaceForEvent(event);
+            if (!surface || !surface.active) return;
+            const now = typeof performance !== 'undefined' && performance && typeof performance.now === 'function'
+                ? performance.now()
+                : Date.now();
+            const color = timingHex(event);
+            activeFlashes.push({ surfaceId: surface.key, wall: now, color });
+            if (activeFlashes.length > 128) activeFlashes.splice(0, activeFlashes.length - 128);
+            const intensity = activeSettings.feedbackIntensity || 0;
+            if (intensity <= 0) return;
+            const sparkCount = Math.max(6, Math.round(10 + 10 * intensity));
+            if (event.piece === 'kick' || event.surfaceId === 'outline-bottom') {
+                kickPulse = Math.max(kickPulse, 1);
+                sparkBurst(surface.x - surface.w * 0.32, surface.y + surface.h * 0.5, 0.08, KICK_COLOR, Math.max(5, sparkCount - 4));
+                sparkBurst(surface.x, surface.y + surface.h * 0.5, 0.08, KICK_COLOR, Math.max(5, sparkCount - 4));
+                sparkBurst(surface.x + surface.w * 0.32, surface.y + surface.h * 0.5, 0.08, KICK_COLOR, Math.max(5, sparkCount - 4));
+            } else {
+                sparkBurst(surface.x, surface.y + surface.h * 0.4, 0.08, color, sparkCount);
+            }
+        }
+
+        function maybeTriggerEventFx(event, dt, cycleBase) {
+            if (dt > 0 || dt < -NOTE_BEHIND_SEC) return;
+            const key = eventFlashKey(event, cycleBase);
+            if (flashedEventKeys.has(key)) return;
+            flashedEventKeys.add(key);
+            triggerEventFx(event);
+        }
+
+        function updateSurfaceFlashes() {
+            const now = typeof performance !== 'undefined' && performance && typeof performance.now === 'function'
+                ? performance.now()
+                : Date.now();
+            while (activeFlashes.length && now - activeFlashes[0].wall > FLASH_MS) {
+                activeFlashes.shift();
+            }
+            const intensity = activeSettings.feedbackIntensity || 0;
+            if (intensity <= 0) return;
+            for (const flash of activeFlashes) {
+                const surface = surfaces[flash.surfaceId];
+                if (!surface || !surface.flashMesh) continue;
+                const age = (now - flash.wall) / FLASH_MS;
+                const strength = Math.max(0, 1 - age) * 0.85 * intensity;
+                if (strength > surface.flashMesh.material.opacity) {
+                    surface.flashMesh.material.opacity = strength;
+                    surface.flashMesh.material.color.setHex(flash.color);
+                }
+            }
         }
 
         /**
@@ -2033,6 +2312,12 @@
                 ? bundle.currentTime
                 : nowSec() % DEMO_PATTERN_SEC;
             const events = projection.hitEvents;
+            if (flashProjection !== projection || t < flashTime - 0.05 || Math.abs(t - flashTime) > DEMO_PATTERN_SEC * 2) {
+                flashedEventKeys = new Set();
+                activeFlashes = [];
+                flashProjection = projection;
+            }
+            flashTime = t;
             if (realHits) {
                 const startIndex = visibleEventStartIndex(projection, t);
                 for (let i = startIndex; i < events.length; i++) {
@@ -2042,6 +2327,7 @@
                     if (dt < -NOTE_BEHIND_SEC) continue;
                     placeNote(event, dt);
                     applyEventPulse(event, dt);
+                    maybeTriggerEventFx(event, dt, 0);
                 }
                 return;
             }
@@ -2056,7 +2342,29 @@
                     if (dt > NOTE_AHEAD_SEC || dt < -NOTE_BEHIND_SEC) continue;
                     placeNote(event, dt);
                     applyEventPulse(event, dt);
+                    maybeTriggerEventFx(event, dt, base);
                 }
+            }
+        }
+
+        function updateWallClockFx() {
+            const nowMs = typeof performance !== 'undefined' && performance && typeof performance.now === 'function'
+                ? performance.now()
+                : Date.now();
+            const dt = fxLastWall === 0 ? 1 / 60 : Math.min(0.05, (nowMs - fxLastWall) / 1000);
+            fxLastWall = nowMs;
+            updateSparks(dt);
+            updateBackground(dt, nowMs / 1000);
+            updateSurfaceFlashes();
+            const intensity = activeSettings.feedbackIntensity || 0;
+            if (kickPulse > 0.001 && camera) {
+                kickPulse *= Math.exp(-dt * 7);
+                camera.position.y = baseCameraY - 0.18 * kickPulse * intensity;
+                if (floorFlash) floorFlash.material.opacity = 0.25 * kickPulse * intensity;
+            } else if (kickPulse !== 0) {
+                kickPulse = 0;
+                if (camera) camera.position.y = baseCameraY;
+                if (floorFlash) floorFlash.material.opacity = 0;
             }
         }
 
@@ -2082,6 +2390,24 @@
             surfaces = Object.create(null);
             noteGeometry = null;
             floorMesh = null;
+            ambientLight = null;
+            keyLight = null;
+            bgGroup = null;
+            bgParticles = null;
+            flashTexture = null;
+            activeFlashes = [];
+            flashedEventKeys = new Set();
+            flashProjection = null;
+            flashTime = -Infinity;
+            sparkPoints = null;
+            sparkPos = null;
+            sparkCol = null;
+            sparkVel = null;
+            sparkLife = null;
+            fxLastWall = 0;
+            kickPulse = 0;
+            baseCameraY = 0;
+            floorFlash = null;
             noteMeshPool = [];
             cachedDrumTab = null;
             cachedProjection = null;
@@ -2149,6 +2475,7 @@
                     }
                 }
                 renderEvents(lastBundle);
+                updateWallClockFx();
                 renderer.render(scene, camera);
             },
 
@@ -2224,6 +2551,7 @@
         buildSurfaceLayout,
         padProfileLayoutKey,
         lowerBoundHitEvents,
+        normalizeTimingStatus,
         hitVariant,
         normalizeHit,
         groupHitEvents,

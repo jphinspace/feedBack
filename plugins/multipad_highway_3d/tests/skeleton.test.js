@@ -398,14 +398,18 @@ test('inactive pads remain visible but do not route notes', () => {
     assert.deepEqual(plain(projected.hitEvents.map(event => event.piece)), ['snare']);
 });
 
-test('variant classification mirrors drum highway precedence', () => {
-    const { hitVariant } = loadFactory().__test;
-    assert.equal(hitVariant({ g: true, f: true, v: 127 }), 'ghost');
-    assert.equal(hitVariant({ f: true, v: 127 }), 'flam');
-    assert.equal(hitVariant({ p: 'ride_bell', v: 64 }), 'bell');
-    assert.equal(hitVariant({ v: 100 }), 'accent');
+test('variant classification ignores articulations for plain multipad hits', () => {
+    const { hitVariant, normalizeTimingStatus } = loadFactory().__test;
+    assert.equal(hitVariant({ g: true, f: true, v: 127 }), 'normal');
+    assert.equal(hitVariant({ f: true, v: 127 }), 'normal');
+    assert.equal(hitVariant({ p: 'ride_bell', v: 64 }), 'normal');
+    assert.equal(hitVariant({ v: 100 }), 'normal');
     assert.equal(hitVariant({ v: 99 }), 'normal');
-    assert.equal(hitVariant({}), 'accent');
+    assert.equal(hitVariant({}), 'normal');
+    assert.equal(normalizeTimingStatus('early'), 'EARLY');
+    assert.equal(normalizeTimingStatus('LATE'), 'LATE');
+    assert.equal(normalizeTimingStatus('OK'), 'OK');
+    assert.equal(normalizeTimingStatus('miss'), '');
 });
 
 test('chart projection normalizes hits, sorts by time, and preserves piece identity', () => {
@@ -425,8 +429,8 @@ test('chart projection normalizes hits, sorts by time, and preserves piece ident
 
     assert.deepEqual(plain(projected.hitEvents.map(e => e.piece)), ['ride_bell', 'hh_closed', 'hh_open', 'kick', 'hh_pedal', 'snare']);
     assert.deepEqual(plain(projected.hitEvents.map(e => e.type)), ['pad', 'pad', 'pad', 'pedal', 'pedal', 'pad']);
-    assert.equal(projected.hitEvents[0].variant, 'bell');
-    assert.equal(projected.hitEvents[1].variant, 'ghost');
+    assert.equal(projected.hitEvents[0].variant, 'normal');
+    assert.equal(projected.hitEvents[1].variant, 'normal');
     assert.equal(projected.hitEvents[2].open, true);
     assert.equal(projected.hitEvents[0].surfaceId, 'pad:6');
     assert.equal(projected.hitEvents[3].surfaceId, 'outline-bottom');
