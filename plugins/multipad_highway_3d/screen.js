@@ -234,6 +234,7 @@
         version: 1,
         id: 'generic-triggers',
         name: 'No external pad triggers',
+        triggerSlots: Object.freeze([]),
         triggers: Object.freeze([]),
     });
 
@@ -254,6 +255,17 @@
         profileId: DEFAULT_PROFILE.id,
         showLabels: true,
         hitGroupWindowMs: 8,
+        cameraAngle: 0.35,
+        sceneTheme: 'default',
+        glowStrength: 0.5,
+        feedbackIntensity: 0.7,
+    });
+
+    const SCENE_THEMES = Object.freeze({
+        default: Object.freeze({ clear: 0x080b12, fog: 0x101827, floor: 0x0b111a, pad: 0x192536, edge: 0x38516f, tunnel: 0x24425e }),
+        midnight: Object.freeze({ clear: 0x050812, fog: 0x0b1220, floor: 0x060a10, pad: 0x111827, edge: 0x334155, tunnel: 0x1e3a5f }),
+        charcoal: Object.freeze({ clear: 0x0d0f12, fog: 0x171a1f, floor: 0x090b0e, pad: 0x20242a, edge: 0x525866, tunnel: 0x333a45 }),
+        forest: Object.freeze({ clear: 0x07110d, fog: 0x102019, floor: 0x07100b, pad: 0x14251d, edge: 0x3f6b55, tunnel: 0x214736 }),
     });
 
     const PIECE_PALETTE_IDX = Object.freeze({
@@ -318,6 +330,10 @@
         triggerProfileId: 'multipad_h3d_trigger_profile',
         showLabels: 'multipad_h3d_show_labels',
         hitGroupWindowMs: 'multipad_h3d_hit_group_window_ms',
+        cameraAngle: 'multipad_h3d_camera_angle',
+        sceneTheme: 'multipad_h3d_scene_theme',
+        glowStrength: 'multipad_h3d_glow_strength',
+        feedbackIntensity: 'multipad_h3d_feedback_intensity',
     });
 
     /**
@@ -466,7 +482,23 @@
                 pieces: trigger.pieces.slice(),
                 color: trigger.color,
             })),
+            triggerSlots: (profile.triggerSlots || []).map(slot => ({
+                id: slot.id,
+                zones: slot.zones,
+            })),
         };
+    }
+
+    function inferTriggerSlots(triggers) {
+        const surfaces = new Set((Array.isArray(triggers) ? triggers : []).map(trigger => trigger && trigger.surface).filter(Boolean));
+        const slots = [];
+        if (surfaces.has('external-left-center') || surfaces.has('external-left-edge')) {
+            slots.push({ id: 'trigger-1', zones: surfaces.has('external-left-edge') ? 2 : 1 });
+        }
+        if (surfaces.has('external-right-center') || surfaces.has('external-right-edge')) {
+            slots.push({ id: 'trigger-2', zones: surfaces.has('external-right-edge') ? 2 : 1 });
+        }
+        return slots;
     }
 
     /**
@@ -498,13 +530,19 @@
         const triggers = validateTriggerProfile(triggerProfile) || cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE);
         const activeSurfaceColor = Object.create(null);
         for (const pedal of pedals.pedals) {
-            if (pedal.pieces.length > 0 && !activeSurfaceColor[pedal.surface]) {
-                activeSurfaceColor[pedal.surface] = colorHexFromCss(pedal.color) || PIECE_COLORS[pedal.pieces[0]] || SCENE_COLORS.surface;
+            if (pedal.pieces.length > 0 && activeSurfaceColor[pedal.surface] == null) {
+                const profileColor = colorHexFromCss(pedal.color);
+                activeSurfaceColor[pedal.surface] = profileColor !== null
+                    ? profileColor
+                    : (PIECE_COLORS[pedal.pieces[0]] || SCENE_COLORS.surface);
             }
         }
         for (const trigger of triggers.triggers) {
-            if (trigger.pieces.length > 0 && !activeSurfaceColor[trigger.surface]) {
-                activeSurfaceColor[trigger.surface] = colorHexFromCss(trigger.color) || PIECE_COLORS[trigger.pieces[0]] || 0xa78bfa;
+            if (trigger.pieces.length > 0 && activeSurfaceColor[trigger.surface] == null) {
+                const profileColor = colorHexFromCss(trigger.color);
+                activeSurfaceColor[trigger.surface] = profileColor !== null
+                    ? profileColor
+                    : (PIECE_COLORS[trigger.pieces[0]] || 0xa78bfa);
             }
         }
         const rows = Math.max(1, valid.rows);
@@ -515,7 +553,10 @@
 
         for (const pad of valid.pads) {
             const active = pad.pieces.length > 0;
-            const color = colorHexFromCss(pad.color) || (active ? (PIECE_COLORS[pad.pieces[0]] || SCENE_COLORS.surface) : SCENE_COLORS.inactiveSurface);
+            const profileColor = colorHexFromCss(pad.color);
+            const color = profileColor !== null
+                ? profileColor
+                : (active ? (PIECE_COLORS[pad.pieces[0]] || SCENE_COLORS.surface) : SCENE_COLORS.inactiveSurface);
             surfaces.push({
                 key: 'pad:' + pad.id,
                 kind: 'pad',
@@ -538,7 +579,7 @@
         const externalPadCenterRadius = externalPadRadius - EXTERNAL_TRIGGER_PAD_EDGE_WIDTH;
         const externalPadX = gridW / 2 + 0.25 + 0.11 / 2 + externalPadRadius + 0.22;
         function controlledSurface(key, activeOpacity, inactiveOpacity) {
-            const active = !!activeSurfaceColor[key];
+            const active = activeSurfaceColor[key] != null;
             return {
                 active,
                 color: active ? activeSurfaceColor[key] : SCENE_COLORS.inactiveSurface,
@@ -770,11 +811,25 @@
             });
         }
 
+        const triggerSlots = [];
+        const rawSlots = Array.isArray(raw.triggerSlots) ? raw.triggerSlots : inferTriggerSlots(triggers);
+        const usedSlotIds = new Set();
+        for (const slot of rawSlots) {
+            if (!slot || typeof slot !== 'object') continue;
+            const id = sanitizeProfileId(slot.id, '');
+            if (id !== 'trigger-1' && id !== 'trigger-2') continue;
+            if (usedSlotIds.has(id)) continue;
+            usedSlotIds.add(id);
+            triggerSlots.push({ id, zones: clampNumber(slot.zones, 1, 2, 1) >= 2 ? 2 : 1 });
+            if (triggerSlots.length >= 2) break;
+        }
+
         return {
             version: 1,
             id: sanitizeProfileId(raw.id, DEFAULT_TRIGGER_PROFILE.id),
             name: sanitizeProfileDisplayText(raw.name, 'Custom external triggers'),
             triggers,
+            triggerSlots,
         };
     }
 
@@ -841,6 +896,17 @@
         if (hitGroupWindowMs !== null) {
             settings.hitGroupWindowMs = clampNumber(hitGroupWindowMs, 0, 50, DEFAULT_SETTINGS.hitGroupWindowMs);
         }
+        const cameraAngle = readStorageValue(LS_KEYS.cameraAngle);
+        if (cameraAngle !== null) settings.cameraAngle = clampNumber(cameraAngle, 0, 1, DEFAULT_SETTINGS.cameraAngle);
+
+        const sceneTheme = readStorageValue(LS_KEYS.sceneTheme);
+        if (sceneTheme && SCENE_THEMES[sceneTheme]) settings.sceneTheme = sceneTheme;
+
+        const glowStrength = readStorageValue(LS_KEYS.glowStrength);
+        if (glowStrength !== null) settings.glowStrength = clampNumber(glowStrength, 0, 1, DEFAULT_SETTINGS.glowStrength);
+
+        const feedbackIntensity = readStorageValue(LS_KEYS.feedbackIntensity);
+        if (feedbackIntensity !== null) settings.feedbackIntensity = clampNumber(feedbackIntensity, 0, 1, DEFAULT_SETTINGS.feedbackIntensity);
         return settings;
     }
 
@@ -868,6 +934,17 @@
         }
         if (key === 'hitGroupWindowMs') {
             writeStorageValue(LS_KEYS[key], String(clampNumber(value, 0, 50, DEFAULT_SETTINGS.hitGroupWindowMs)));
+            settingsVersion++;
+            return;
+        }
+        if (key === 'cameraAngle' || key === 'glowStrength' || key === 'feedbackIntensity') {
+            writeStorageValue(LS_KEYS[key], String(clampNumber(value, 0, 1, DEFAULT_SETTINGS[key])));
+            settingsVersion++;
+            return;
+        }
+        if (key === 'sceneTheme') {
+            const id = SCENE_THEMES[value] ? value : DEFAULT_SETTINGS.sceneTheme;
+            writeStorageValue(LS_KEYS[key], id);
             settingsVersion++;
             return;
         }
@@ -1257,11 +1334,15 @@
         let cachedSettingsVersion = -1;
         let demoProjection = null;
         let demoSettingsVersion = -1;
+        let demoSurfaceLayoutKey = null;
         let activeSurfaceLayoutKey = null;
         let renderCursorProjection = null;
         let renderCursorIndex = 0;
         let renderCursorTime = -Infinity;
         let visibleNoteCount = 0;
+        let activeSettings = readSettings();
+        let activeThemeId = activeSettings.sceneTheme;
+        let floorMesh = null;
 
         /**
          * Return a monotonic wall-clock time for demo playback.
@@ -1372,10 +1453,11 @@
             const key = String(colorHex) + ':' + String(variant || 'normal');
             if (noteMaterials.has(key)) return noteMaterials.get(key);
             const transparent = variant === 'ghost';
+            const glow = 0.25 + (activeSettings.glowStrength || 0) * 0.75;
             const material = new T.MeshStandardMaterial({
                 color: colorHex,
                 emissive: colorHex,
-                emissiveIntensity: variant === 'accent' ? 0.85 : 0.55,
+                emissiveIntensity: (variant === 'accent' ? 0.85 : 0.55) * glow,
                 metalness: 0.12,
                 roughness: 0.36,
                 transparent,
@@ -1383,6 +1465,53 @@
             });
             noteMaterials.set(key, material);
             return material;
+        }
+
+        function updateSettingsFromStorage() {
+            const next = readSettings();
+            const glowChanged = !activeSettings || next.glowStrength !== activeSettings.glowStrength;
+            activeSettings = next;
+            if (labelGroup) labelGroup.visible = !!activeSettings.showLabels;
+            if (camera) applyCameraSettings();
+            if (glowChanged) {
+                for (const mat of noteMaterials.values()) {
+                    if (mat && typeof mat.dispose === 'function') mat.dispose();
+                }
+                noteMaterials = new Map();
+            }
+            if (activeThemeId !== activeSettings.sceneTheme) {
+                applySceneTheme();
+            }
+        }
+
+        function themeColors() {
+            return SCENE_THEMES[activeSettings.sceneTheme] || SCENE_THEMES.default;
+        }
+
+        function applySceneTheme() {
+            if (!scene) return;
+            activeThemeId = activeSettings.sceneTheme;
+            const theme = themeColors();
+            scene.background = new T.Color(theme.clear);
+            if (scene.fog) scene.fog.color.setHex(theme.fog);
+            if (floorMesh && floorMesh.material && floorMesh.material.color) floorMesh.material.color.setHex(theme.floor);
+            if (renderer && renderer.setClearColor) renderer.setClearColor(theme.clear, 1);
+            if (surfaceGroup) {
+                for (const surface of Object.values(surfaces)) {
+                    if (!surface.active) continue;
+                    if (surface.material && surface.material.color && surface.kind !== 'external-trigger-center' && surface.kind !== 'external-trigger-edge') {
+                        surface.material.color.setHex(theme.pad);
+                    }
+                    if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(theme.edge);
+                }
+            }
+        }
+
+        function applyCameraSettings() {
+            if (!camera) return;
+            const a = activeSettings.cameraAngle;
+            camera.position.set(0, 2.4 + a * 2.0, 7.8 - a * 2.3);
+            camera.lookAt(0, GRID_CENTER_Y + a * 0.2, -7.2 + a * 2.8);
         }
 
         /**
@@ -1474,8 +1603,9 @@
          */
         function addPlaneSurface(key, x, y, w, h, colorHex, opacity, group) {
             const geo = new T.PlaneGeometry(w, h);
+            const theme = themeColors();
             const mat = new T.MeshStandardMaterial({
-                color: SCENE_COLORS.pad,
+                color: theme.pad,
                 emissive: colorHex,
                 emissiveIntensity: 0.05,
                 metalness: 0.1,
@@ -1490,7 +1620,7 @@
 
             const edgeGeo = new T.EdgesGeometry(geo);
             const edgeMat = new T.LineBasicMaterial({
-                color: SCENE_COLORS.padEdge,
+                color: theme.edge,
                 transparent: true,
                 opacity: 0.74,
             });
@@ -1619,6 +1749,7 @@
             }
             surfaceGroup = new T.Group();
             labelGroup = new T.Group();
+            labelGroup.visible = !!activeSettings.showLabels;
             scene.add(surfaceGroup);
             scene.add(labelGroup);
             surfaces = Object.create(null);
@@ -1641,10 +1772,11 @@
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(SCENE_COLORS.inactiveEdge);
                     if (surface.edgeMaterial) surface.edgeMaterial.opacity = 0.35;
                 }
+                surface.kind = desc.kind;
                 surfaces[surface.key] = surface;
                 if (desc.kind === 'pad') {
                     addTunnelLines(desc.x, desc.y, desc.w, desc.h, surfaceGroup);
-                    const label = createLabelSprite(desc.pad.label || '—', PAD_W * 0.58, PAD_H * 0.26);
+                    const label = activeSettings.showLabels ? createLabelSprite(desc.pad.label || '—', PAD_W * 0.58, PAD_H * 0.26) : null;
                     if (label) {
                         label.position.set(desc.x, desc.y, 0.08);
                         labelGroup.add(label);
@@ -1660,11 +1792,13 @@
          */
         function initScene() {
             scene = new T.Scene();
-            scene.background = new T.Color(SCENE_COLORS.clear);
-            scene.fog = new T.Fog(SCENE_COLORS.fog, 12, 34);
+            activeSettings = readSettings();
+            activeThemeId = activeSettings.sceneTheme;
+            const theme = themeColors();
+            scene.background = new T.Color(theme.clear);
+            scene.fog = new T.Fog(theme.fog, 12, 34);
             camera = new T.PerspectiveCamera(44, 1, 0.1, 80);
-            camera.position.set(0, 2.8, 7.4);
-            camera.lookAt(0, GRID_CENTER_Y, -7);
+            applyCameraSettings();
 
             const ambient = new T.AmbientLight(0x7c8ca8, 0.48);
             const key = new T.DirectionalLight(0xffffff, 1.15);
@@ -1673,17 +1807,17 @@
             rim.position.set(3, 3, -6);
             scene.add(ambient, key, rim);
 
-            const floor = new T.Mesh(
+            floorMesh = new T.Mesh(
                 new T.PlaneGeometry(20, 42),
                 new T.MeshStandardMaterial({
-                    color: SCENE_COLORS.floor,
+                    color: theme.floor,
                     roughness: 0.85,
                     metalness: 0.06,
                 })
             );
-            floor.rotation.x = -Math.PI / 2;
-            floor.position.set(0, -0.05, -9);
-            scene.add(floor);
+            floorMesh.rotation.x = -Math.PI / 2;
+            floorMesh.position.set(0, -0.05, -9);
+            scene.add(floorMesh);
 
             notesGroup = new T.Group();
             scene.add(notesGroup);
@@ -1747,6 +1881,7 @@
             if (!demoProjection || demoSettingsVersion !== settingsVersion) {
                 const profile = readMultipadProfile();
                 demoSettingsVersion = settingsVersion;
+                demoSurfaceLayoutKey = null;
                 demoProjection = projectDrumTab({
                     hits: [
                         { t: 0.00, p: 'hh_closed', v: 88 },
@@ -1769,8 +1904,9 @@
                     hitGroupWindowSec: DEFAULT_SETTINGS.hitGroupWindowMs / 1000,
                 });
             }
-            if (activeSurfaceLayoutKey !== buildSurfaceLayout(demoProjection.padProfile, demoProjection.pedalProfile, demoProjection.triggerProfile).layoutKey) {
+            if (!demoSurfaceLayoutKey || activeSurfaceLayoutKey !== demoSurfaceLayoutKey) {
                 buildSurfaceGrid(demoProjection.padProfile, demoProjection.pedalProfile, demoProjection.triggerProfile);
+                demoSurfaceLayoutKey = activeSurfaceLayoutKey;
             }
             return demoProjection;
         }
@@ -1869,11 +2005,13 @@
             if (!surface) return;
             const pulse = Math.max(0, 1 - Math.abs(dt) / HIT_PULSE_SEC);
             if (pulse <= 0) return;
+            const intensity = activeSettings.feedbackIntensity || 0;
+            if (intensity <= 0) return;
             const color = eventColorForEvent(event);
             surface.material.emissive.setHex(color);
-            surface.material.emissiveIntensity = Math.max(surface.material.emissiveIntensity || 0, 0.18 + pulse * 1.4);
-            surface.material.opacity = Math.max(surface.material.opacity || 0, 0.52 + pulse * 0.42);
-            const scale = 1 + pulse * (event.type === 'pad' ? 0.045 : 0.09);
+            surface.material.emissiveIntensity = Math.max(surface.material.emissiveIntensity || 0, 0.18 + pulse * 1.4 * intensity);
+            surface.material.opacity = Math.max(surface.material.opacity || 0, 0.52 + pulse * 0.42 * intensity);
+            const scale = 1 + pulse * intensity * (event.type === 'pad' ? 0.045 : 0.09);
             surface.mesh.scale.set(scale, scale, 1);
         }
 
@@ -1943,10 +2081,12 @@
             labelGroup = null;
             surfaces = Object.create(null);
             noteGeometry = null;
+            floorMesh = null;
             noteMeshPool = [];
             cachedDrumTab = null;
             cachedProjection = null;
             demoProjection = null;
+            demoSurfaceLayoutKey = null;
             renderCursorProjection = null;
             renderCursorIndex = 0;
             renderCursorTime = -Infinity;
@@ -1995,6 +2135,7 @@
                 if (destroyed) return;
                 lastBundle = bundle || lastBundle;
                 if (!ready || !renderer || !scene || !camera) return;
+                updateSettingsFromStorage();
                 const nextScale = (lastBundle && Number.isFinite(lastBundle.renderScale)) ? lastBundle.renderScale : 1;
                 if (nextScale !== renderScale) {
                     renderScale = nextScale;
@@ -2038,6 +2179,10 @@
                     surfaces: Object.keys(surfaces).length,
                     projectedHits: cachedProjection ? cachedProjection.hitEvents.length : 0,
                     visibleNotes: visibleNoteCount,
+                    showLabels: !!activeSettings.showLabels,
+                    cameraAngle: activeSettings.cameraAngle,
+                    sceneTheme: activeSettings.sceneTheme,
+                    feedbackIntensity: activeSettings.feedbackIntensity,
                 };
             },
         };
@@ -2124,6 +2269,15 @@
         const out = {};
         for (const piece of ALL_PIECES) out[piece] = cssColorFromHex(PIECE_COLORS[piece]);
         return out;
+    };
+    window.multipadH3dGetSettings = function () {
+        return Object.assign({}, readSettings());
+    };
+    window.multipadH3dSetSetting = function (key, value) {
+        writeSetting(key, value);
+    };
+    window.multipadH3dGetSceneThemes = function () {
+        return Object.keys(SCENE_THEMES);
     };
 
     window.feedBackViz_multipad_highway_3d = createFactory;

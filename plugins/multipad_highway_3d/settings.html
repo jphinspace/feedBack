@@ -65,7 +65,26 @@
 
         <div class="border-t border-gray-800 pt-4">
             <h4 class="text-xs font-medium text-gray-300 mb-2">Display</h4>
-            <label for="multipad-h3d-hit-window" class="text-xs font-medium text-gray-400 mb-1 block">
+            <label for="multipad-h3d-camera" class="text-xs font-medium text-gray-400 mb-1 block">
+                Camera angle <span id="multipad-h3d-camera-val" class="text-gray-500 font-mono">0.35</span>
+            </label>
+            <input type="range" id="multipad-h3d-camera" min="0" max="1" step="0.05" value="0.35" class="w-full">
+
+            <label for="multipad-h3d-theme" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">Scene theme</label>
+            <select id="multipad-h3d-theme"
+                class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none"></select>
+
+            <label for="multipad-h3d-glow" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">
+                Glow strength <span id="multipad-h3d-glow-val" class="text-gray-500 font-mono">0.50</span>
+            </label>
+            <input type="range" id="multipad-h3d-glow" min="0" max="1" step="0.05" value="0.5" class="w-full">
+
+            <label for="multipad-h3d-feedback" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">
+                Hit feedback intensity <span id="multipad-h3d-feedback-val" class="text-gray-500 font-mono">0.70</span>
+            </label>
+            <input type="range" id="multipad-h3d-feedback" min="0" max="1" step="0.05" value="0.7" class="w-full">
+
+            <label for="multipad-h3d-hit-window" class="text-xs font-medium text-gray-400 mb-1 mt-3 block">
                 Hit group window <span id="multipad-h3d-hit-window-val" class="text-gray-500 font-mono">8</span> ms
             </label>
             <input type="range" id="multipad-h3d-hit-window" min="0" max="50" step="1" value="8" class="w-full">
@@ -184,7 +203,10 @@
                 sel.appendChild(opt);
             }
             sel.onchange = () => {
-                profile = window.multipadH3dCreateProfileForLayout(sel.value);
+                const nextLayoutProfile = window.multipadH3dCreateProfileForLayout(sel.value);
+                profile.id = nextLayoutProfile.id;
+                profile.name = nextLayoutProfile.name;
+                profile.padProfile = nextLayoutProfile.padProfile;
                 document.getElementById('multipad-h3d-profile-name').value = profile.name;
                 saveProfile('profile saved');
                 render();
@@ -363,8 +385,10 @@
         }
         function triggerMeta() {
             const bySurface = new Map((profile.triggerProfile.triggers || []).map(trigger => [trigger.surface, trigger]));
+            const slotMap = new Map((profile.triggerProfile.triggerSlots || []).map(slot => [slot.id, slot]));
             return TRIGGER_SIDES.map(side => ({
                 side,
+                slot: slotMap.get(side.id) || null,
                 center: bySurface.get(side.center) || null,
                 edge: bySurface.get(side.edge) || null,
             }));
@@ -372,8 +396,10 @@
         function rebuildTriggers(count, modes) {
             const current = triggerMeta();
             const next = [];
+            const slots = [];
             for (let i = 0; i < count; i++) {
-                const mode = modes[i] || (current[i].edge ? 'dual' : 'single');
+                const mode = modes[i] || ((current[i].slot && current[i].slot.zones >= 2) || current[i].edge ? 'dual' : 'single');
+                slots.push({ id: TRIGGER_SIDES[i].id, zones: mode === 'dual' ? 2 : 1 });
                 const center = current[i].center || {};
                 next.push({
                     id: TRIGGER_SIDES[i].id + '-center',
@@ -394,10 +420,11 @@
                 }
             }
             profile.triggerProfile.triggers = next;
+            profile.triggerProfile.triggerSlots = slots;
         }
         function renderTriggers() {
             const meta = triggerMeta();
-            const count = meta.filter(item => item.center || item.edge).length;
+            const count = meta.filter(item => item.slot || item.center || item.edge).length;
             const countSel = document.getElementById('multipad-h3d-trigger-count');
             countSel.value = String(count);
             countSel.onchange = () => {
@@ -408,7 +435,7 @@
             const el = document.getElementById('multipad-h3d-triggers');
             el.innerHTML = '';
             triggerMeta().slice(0, count).forEach((item, i) => {
-                const mode = item.edge ? 'dual' : 'single';
+                const mode = (item.slot && item.slot.zones >= 2) || item.edge ? 'dual' : 'single';
                 const wrap = document.createElement('div');
                 wrap.className = 'rounded bg-dark-700/40 px-2 py-2';
                 wrap.innerHTML =
@@ -424,7 +451,7 @@
             });
             el.querySelectorAll('select[data-mode]').forEach(sel => {
                 sel.onchange = () => {
-                    const modes = triggerMeta().map((item, idx) => idx === parseInt(sel.dataset.mode, 10) ? sel.value : (item.edge ? 'dual' : 'single'));
+                    const modes = triggerMeta().map((item, idx) => idx === parseInt(sel.dataset.mode, 10) ? sel.value : ((item.slot && item.slot.zones >= 2) || item.edge ? 'dual' : 'single'));
                     rebuildTriggers(count, modes);
                     saveProfile();
                     render();
@@ -461,18 +488,58 @@
                 `</div>`;
         }
         function hydrateDisplayControls() {
-            const settings = (window.feedBackViz_multipad_highway_3d && window.feedBackViz_multipad_highway_3d.__test && window.feedBackViz_multipad_highway_3d.__test.readSettings())
-                || { showLabels: true, hitGroupWindowMs: 8 };
+            const settings = (window.multipadH3dGetSettings && window.multipadH3dGetSettings())
+                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7 };
             const show = document.getElementById('multipad-h3d-show-labels');
             const range = document.getElementById('multipad-h3d-hit-window');
             const label = document.getElementById('multipad-h3d-hit-window-val');
+            const camera = document.getElementById('multipad-h3d-camera');
+            const cameraLabel = document.getElementById('multipad-h3d-camera-val');
+            const theme = document.getElementById('multipad-h3d-theme');
+            const glow = document.getElementById('multipad-h3d-glow');
+            const glowLabel = document.getElementById('multipad-h3d-glow-val');
+            const feedback = document.getElementById('multipad-h3d-feedback');
+            const feedbackLabel = document.getElementById('multipad-h3d-feedback-val');
+
+            theme.innerHTML = '';
+            const themes = window.multipadH3dGetSceneThemes ? window.multipadH3dGetSceneThemes() : ['default'];
+            for (const id of themes) {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id.replace(/(^|[-_])([a-z])/g, function (_, sep, ch) { return (sep ? ' ' : '') + ch.toUpperCase(); });
+                opt.selected = id === settings.sceneTheme;
+                theme.appendChild(opt);
+            }
+
             show.checked = !!settings.showLabels;
             range.value = String(settings.hitGroupWindowMs);
             label.textContent = String(settings.hitGroupWindowMs);
-            show.onchange = () => window.feedBackViz_multipad_highway_3d.__test.writeSetting('showLabels', show.checked);
+            camera.value = String(settings.cameraAngle);
+            cameraLabel.textContent = parseFloat(settings.cameraAngle).toFixed(2);
+            glow.value = String(settings.glowStrength);
+            glowLabel.textContent = parseFloat(settings.glowStrength).toFixed(2);
+            feedback.value = String(settings.feedbackIntensity);
+            feedbackLabel.textContent = parseFloat(settings.feedbackIntensity).toFixed(2);
+
+            show.onchange = () => window.multipadH3dSetSetting && window.multipadH3dSetSetting('showLabels', show.checked);
             range.oninput = () => {
                 label.textContent = range.value;
-                window.feedBackViz_multipad_highway_3d.__test.writeSetting('hitGroupWindowMs', range.value);
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('hitGroupWindowMs', range.value);
+            };
+            camera.oninput = () => {
+                cameraLabel.textContent = parseFloat(camera.value).toFixed(2);
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('cameraAngle', camera.value);
+            };
+            theme.onchange = () => {
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('sceneTheme', theme.value);
+            };
+            glow.oninput = () => {
+                glowLabel.textContent = parseFloat(glow.value).toFixed(2);
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('glowStrength', glow.value);
+            };
+            feedback.oninput = () => {
+                feedbackLabel.textContent = parseFloat(feedback.value).toFixed(2);
+                window.multipadH3dSetSetting && window.multipadH3dSetSetting('feedbackIntensity', feedback.value);
             };
         }
         function render() {

@@ -187,7 +187,16 @@ Phase 5 first-draft requirements:
 - Unassigned pads, pedals, and trigger zones are valid. They must appear grayed out in settings and in the 3D highway. They must not send, receive, or route notes to their corresponding visual surfaces.
 - Multiple pedals mapped to the same piece are valid. For example, two pedals may both map to `kick`; either pedal can send kick events later, but the 3D UI still shows the standard kick pedal surface rather than two distinct kick surfaces.
 - If no pedal is mapped to `hh_pedal`, the special hi-hat pedal surface should not display as an active hi-hat surface.
-- Selecting or saving a profile makes that profile the new default instead of generic 3x3. A profile must include pad layout, pad piece assignments, pad display surface colors, pedal count/selection, pedal piece assignments, pedal display surface colors, external trigger count/selection, trigger zone mode, external trigger piece assignments, and external trigger display surface colors.
+- Selecting or saving a profile makes that profile the new default instead of generic 3x3. The persisted profile contract must include required metadata fields `version`, `id`, and `name`, plus pad layout, pad piece assignments, pad display surface colors, pedal count/selection, pedal piece assignments, pedal display surface colors, external trigger count/selection, trigger zone mode, external trigger piece assignments, and external trigger display surface colors.
+
+Phase 5 output:
+
+- Settings now expose 3x3, 2x4, 4x3, and Custom pad layouts. Custom supports click-and-drag active-cell editing within the supported grid bounds.
+- Saved multipad profiles replace the default profile and include required `version`, `id`, and `name` metadata, pad layout, pad assignments/colors, pedal selection and assignments/colors, external trigger slots/zones, trigger assignments/colors, and pad fallbacks.
+- Unassigned pads, pedals, and trigger zones are valid inactive controls. They render gray in settings and the 3D surface model and are excluded from routing.
+- Duplicate pedal piece mappings are valid, including two pedals mapped to kick.
+- Default piece colors use the same default palette mapping as `drum_highway_3d`.
+- Renderer settings now apply label visibility, camera angle, scene theme, glow strength, hit feedback intensity, and hit group window.
 
 Phase 6: Polish visual feedback. Add pad flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, pedal surface pulses, hit group cues, and shared background/cinematic helpers where they make sense.
 

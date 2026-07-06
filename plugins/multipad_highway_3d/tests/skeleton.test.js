@@ -94,6 +94,10 @@ test('renderer lifecycle exposes WebGL state and tears down idempotently without
         surfaces: 0,
         projectedHits: 0,
         visibleNotes: 0,
+        showLabels: true,
+        cameraAngle: 0.35,
+        sceneTheme: 'default',
+        feedbackIntensity: 0.7,
     });
     renderer.destroy();
     renderer.destroy();
@@ -257,6 +261,35 @@ test('surface layout renders every accepted pedal and trigger surface', () => {
     assert.equal(rightEdge.outerRadius - rightEdge.innerRadius >= 0.12, true);
     assert.equal(leftEdge.x < leftOutline.x, true);
     assert.equal(rightEdge.x > rightOutline.x, true);
+});
+
+test('surface layout preserves black profile colors', () => {
+    const t = loadFactory().__test;
+    const padProfile = t.validatePadProfile({
+        id: 'black-pad',
+        name: 'Black pad',
+        rows: 1,
+        cols: 1,
+        pads: [
+            { id: 'pad-1', row: 0, col: 0, pieces: ['snare'], color: '#000000' },
+        ],
+    });
+    const pedalProfile = t.validatePedalProfile({
+        pedals: [
+            { id: 'black-kick', surface: 'outline-bottom', pieces: ['kick'], color: '#000000' },
+        ],
+    });
+    const triggerProfile = t.validateTriggerProfile({
+        triggers: [
+            { id: 'black-trigger', surface: 'external-left-center', pieces: ['tom_hi'], color: '#000000' },
+        ],
+    });
+    const layout = t.buildSurfaceLayout(padProfile, pedalProfile, triggerProfile);
+    const byKey = new Map(layout.surfaces.map(surface => [surface.key, surface]));
+
+    assert.equal(byKey.get('pad:pad-1').color, 0x000000);
+    assert.equal(byKey.get('outline-bottom').color, 0x000000);
+    assert.equal(byKey.get('external-left-center').color, 0x000000);
 });
 
 test('hit event lower bound starts real-chart scans near the visible window', () => {
@@ -494,6 +527,10 @@ test('settings survive missing and corrupt localStorage', () => {
         multipad_h3d_trigger_profile: 'generic-triggers',
         multipad_h3d_show_labels: '0',
         multipad_h3d_hit_group_window_ms: '999',
+        multipad_h3d_camera_angle: '2',
+        multipad_h3d_scene_theme: 'forest',
+        multipad_h3d_glow_strength: '-1',
+        multipad_h3d_feedback_intensity: '0.25',
     });
     const settings = factory.__test.readSettings();
     assert.equal(settings.padProfileId, 'generic-3x3');
@@ -501,11 +538,23 @@ test('settings survive missing and corrupt localStorage', () => {
     assert.equal(settings.triggerProfileId, 'generic-triggers');
     assert.equal(settings.showLabels, false);
     assert.equal(settings.hitGroupWindowMs, 50);
+    assert.equal(settings.cameraAngle, 1);
+    assert.equal(settings.sceneTheme, 'forest');
+    assert.equal(settings.glowStrength, 0);
+    assert.equal(settings.feedbackIntensity, 0.25);
 
     factory.__test.writeSetting('hitGroupWindowMs', -1);
     factory.__test.writeSetting('showLabels', true);
+    factory.__test.writeSetting('cameraAngle', 0.65);
+    factory.__test.writeSetting('sceneTheme', 'charcoal');
+    factory.__test.writeSetting('glowStrength', 1.5);
+    factory.__test.writeSetting('feedbackIntensity', -1);
     assert.equal(store.get('multipad_h3d_hit_group_window_ms'), '0');
     assert.equal(store.get('multipad_h3d_show_labels'), '1');
+    assert.equal(store.get('multipad_h3d_camera_angle'), '0.65');
+    assert.equal(store.get('multipad_h3d_scene_theme'), 'charcoal');
+    assert.equal(store.get('multipad_h3d_glow_strength'), '1');
+    assert.equal(store.get('multipad_h3d_feedback_intensity'), '0');
 });
 
 test('profile API exposes phase five layout choices and persists saved defaults', () => {
@@ -537,6 +586,9 @@ test('profile API exposes phase five layout choices and persists saved defaults'
     profile.triggerProfile = factory.__test.validateTriggerProfile({
         id: 'triggers',
         name: 'One dual trigger',
+        triggerSlots: [
+            { id: 'trigger-1', zones: 2 },
+        ],
         triggers: [
             { id: 't1-center', surface: 'external-left-center', pieces: ['tom_hi'], color: '#30d040' },
             { id: 't1-edge', surface: 'external-left-edge', pieces: [], color: '#2d3748' },
@@ -550,4 +602,5 @@ test('profile API exposes phase five layout choices and persists saved defaults'
     assert.equal(saved.padProfile.rows, 2);
     assert.deepEqual(plain(saved.pedalProfile.pedals.map(pedal => pedal.pieces)), [['kick'], ['kick']]);
     assert.deepEqual(plain(saved.triggerProfile.triggers.map(trigger => trigger.pieces)), [['tom_hi'], []]);
+    assert.deepEqual(plain(saved.triggerProfile.triggerSlots), [{ id: 'trigger-1', zones: 2 }]);
 });
