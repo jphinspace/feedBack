@@ -736,8 +736,8 @@
 
         const fallbacks = Object.create(null);
         const rawFallbacks = raw.fallbacks && typeof raw.fallbacks === 'object' ? raw.fallbacks : {};
-        for (const piece of ALL_PIECES) {
-            const fallbackPiece = rawFallbacks[piece] || PIECE_FALLBACKS[piece];
+        for (const piece of Object.keys(rawFallbacks)) {
+            const fallbackPiece = rawFallbacks[piece];
             if (PEDAL_PIECE_SET.has(piece) || PEDAL_PIECE_SET.has(fallbackPiece)) continue;
             if (!PIECE_SET.has(piece) || !PIECE_SET.has(fallbackPiece)) continue;
             fallbacks[piece] = fallbackPiece;
@@ -1612,7 +1612,7 @@
          * Return a cached material for note meshes.
          *
          * @param {number} colorHex - Three.js hex color.
-         * @param {string} variant - Kept for older tests/callers; ignored for multipad visuals.
+         * @param {string} variant - Accepted by the material API; ignored for multipad visuals.
          * @returns {object} Three.js material.
          */
         function getNoteMaterial(colorHex, variant) {

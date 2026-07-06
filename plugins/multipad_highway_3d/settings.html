@@ -30,11 +30,13 @@
 
         <div class="border-t border-gray-800 pt-4">
             <h4 class="text-xs font-medium text-gray-300 mb-2">Pads</h4>
-            <div id="multipad-h3d-pads" class="space-y-1"></div>
-            <details class="mt-3">
-                <summary class="text-xs text-gray-400 cursor-pointer">Chart fallbacks</summary>
-                <div id="multipad-h3d-fallbacks" class="space-y-1 mt-2"></div>
-            </details>
+            <div id="multipad-h3d-pads" class="grid gap-2"></div>
+            <div class="mt-3 rounded-lg border border-gray-800 bg-dark-700/30">
+                <div class="px-3 py-2 text-xs font-medium text-gray-400">
+                    Unmapped chart pieces <span id="multipad-h3d-unmapped-count" class="text-gray-500">(0)</span>
+                </div>
+                <div id="multipad-h3d-unmapped-pieces" class="space-y-1 px-3 pb-3 pt-1"></div>
+            </div>
         </div>
 
         <div class="border-t border-gray-800 pt-4">
@@ -186,6 +188,48 @@
                 : '';
             if (!pad.color || pad.color === '#2d3748') pad.color = pad.pieces[0] ? pieceColor(pad.pieces[0]) : '#2d3748';
         }
+        function normalizePadPieces(pad) {
+            const seen = new Set();
+            pad.pieces = (pad.pieces || []).filter(piece => {
+                if (!padPieces.includes(piece) || seen.has(piece)) return false;
+                seen.add(piece);
+                return true;
+            });
+            return pad.pieces;
+        }
+        function assignedPadPieceSet(exceptPadId) {
+            const assigned = new Set();
+            for (const pad of profile.padProfile.pads) {
+                if (pad.id === exceptPadId) continue;
+                for (const piece of pad.pieces || []) {
+                    if (padPieces.includes(piece)) assigned.add(piece);
+                }
+            }
+            return assigned;
+        }
+        function allChartPieces() {
+            const out = [];
+            const seen = new Set();
+            for (const piece of padPieces.concat(pedalPieces)) {
+                if (!piece || seen.has(piece)) continue;
+                seen.add(piece);
+                out.push(piece);
+            }
+            return out;
+        }
+        function directlyAssignedChartPieceSet() {
+            const valid = new Set(allChartPieces());
+            const assigned = new Set();
+            const add = (pieces) => {
+                for (const piece of pieces || []) {
+                    if (valid.has(piece)) assigned.add(piece);
+                }
+            };
+            for (const pad of profile.padProfile.pads || []) add(pad.pieces);
+            for (const pedal of profile.pedalProfile.pedals || []) add(pedal.pieces);
+            for (const trigger of profile.triggerProfile.triggers || []) add(trigger.pieces);
+            return assigned;
+        }
         function getPadAt(row, col) {
             return profile.padProfile.pads.find(pad => pad.row === row && pad.col === col) || null;
         }
@@ -280,23 +324,96 @@
         function renderPads() {
             const el = document.getElementById('multipad-h3d-pads');
             el.innerHTML = '';
-            for (const pad of profile.padProfile.pads) {
-                const piece = pad.pieces && pad.pieces[0] || '';
-                const row = document.createElement('div');
-                row.className = 'grid grid-cols-[2.5rem_1fr_2.25rem] items-center gap-2 px-2 py-1 rounded ' +
-                    (piece ? 'bg-dark-700/60' : 'bg-dark-700/30 opacity-75');
-                row.innerHTML =
-                    `<span class="font-mono text-[10px] text-gray-500">R${pad.row + 1}C${pad.col + 1}</span>` +
-                    `<select data-pad="${pad.id}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
-                    `<input type="color" data-color="${pad.id}" value="${pad.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
-                el.appendChild(row);
+            el.className = 'grid gap-2';
+            el.style.gridTemplateColumns = `repeat(${profile.padProfile.cols}, minmax(0, 1fr))`;
+            for (let rowIndex = 0; rowIndex < profile.padProfile.rows; rowIndex++) {
+                for (let colIndex = 0; colIndex < profile.padProfile.cols; colIndex++) {
+                    const pad = getPadAt(rowIndex, colIndex);
+                    const cell = document.createElement('div');
+                    if (!pad) {
+                        cell.className = 'min-w-0 min-h-[4.75rem] rounded border border-gray-800 bg-dark-700/20 p-2 text-center text-[10px] text-gray-600';
+                        cell.textContent = 'Inactive';
+                        el.appendChild(cell);
+                        continue;
+                    }
+                    const pieces = normalizePadPieces(pad);
+                    const assignedElsewhere = assignedPadPieceSet(pad.id);
+                    cell.className = 'min-w-0 min-h-[4.75rem] rounded border p-2 ' + (pieces.length
+                        ? 'border-gray-700 bg-dark-700/60'
+                        : 'border-gray-800 bg-dark-700/30 opacity-75');
+
+                    const pieceList = document.createElement('div');
+                    pieceList.className = 'min-h-[1.75rem] flex flex-wrap gap-1';
+                    if (!pieces.length) {
+                        const empty = document.createElement('span');
+                        empty.className = 'text-[10px] text-gray-500';
+                        empty.textContent = 'Unassigned';
+                        pieceList.appendChild(empty);
+                    }
+                    for (const piece of pieces) {
+                        const chip = document.createElement('button');
+                        chip.type = 'button';
+                        chip.dataset.removePad = pad.id;
+                        chip.dataset.removePiece = piece;
+                        chip.className = 'min-w-0 rounded border border-gray-700 bg-dark-800/60 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-red-500/60 hover:text-red-300';
+                        chip.setAttribute('aria-label', `Remove ${friendly(piece)} from pad row ${rowIndex + 1} column ${colIndex + 1}`);
+                        chip.textContent = friendly(piece) + ' x';
+                        pieceList.appendChild(chip);
+                    }
+                    cell.appendChild(pieceList);
+
+                    const addSelect = document.createElement('select');
+                    addSelect.dataset.addPad = pad.id;
+                    addSelect.setAttribute('aria-label', `Add pad assignment row ${rowIndex + 1} column ${colIndex + 1}`);
+                    addSelect.className = 'mt-2 min-w-0 w-full bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none';
+                    const placeholder = document.createElement('option');
+                    placeholder.value = '';
+                    placeholder.textContent = pieces.length ? 'Add piece' : 'Assign piece';
+                    addSelect.appendChild(placeholder);
+                    let addable = 0;
+                    for (const piece of padPieces) {
+                        if (pieces.includes(piece) || assignedElsewhere.has(piece)) continue;
+                        const opt = document.createElement('option');
+                        opt.value = piece;
+                        opt.textContent = friendly(piece);
+                        addSelect.appendChild(opt);
+                        addable++;
+                    }
+                    if (!addable) {
+                        placeholder.textContent = 'All pieces assigned';
+                        addSelect.disabled = true;
+                    }
+                    cell.appendChild(addSelect);
+
+                    const color = document.createElement('input');
+                    color.type = 'color';
+                    color.dataset.color = pad.id;
+                    color.value = pad.color || (pieces[0] ? pieceColor(pieces[0]) : '#2d3748');
+                    color.setAttribute('aria-label', `Pad color row ${rowIndex + 1} column ${colIndex + 1}`);
+                    color.className = 'mt-2 h-7 w-full bg-dark-700 border border-gray-800 rounded';
+                    cell.appendChild(color);
+                    el.appendChild(cell);
+                }
             }
-            el.querySelectorAll('select').forEach(sel => {
+            el.querySelectorAll('select[data-add-pad]').forEach(sel => {
                 sel.onchange = () => {
-                    const pad = profile.padProfile.pads.find(p => p.id === sel.dataset.pad);
+                    const pad = profile.padProfile.pads.find(p => p.id === sel.dataset.addPad);
                     if (!pad) return;
-                    pad.pieces = sel.value ? [sel.value] : [];
-                    pad.color = sel.value ? pieceColor(sel.value) : '#2d3748';
+                    if (!sel.value) return;
+                    pad.pieces = normalizePadPieces(pad);
+                    if (!pad.pieces.includes(sel.value)) pad.pieces.push(sel.value);
+                    if (!pad.color || pad.color === '#2d3748') pad.color = pieceColor(sel.value);
+                    syncPadLabel(pad);
+                    saveProfile();
+                    render();
+                };
+            });
+            el.querySelectorAll('button[data-remove-piece]').forEach(btn => {
+                btn.onclick = () => {
+                    const pad = profile.padProfile.pads.find(p => p.id === btn.dataset.removePad);
+                    if (!pad) return;
+                    pad.pieces = normalizePadPieces(pad).filter(piece => piece !== btn.dataset.removePiece);
+                    if (!pad.pieces.length) pad.color = '#2d3748';
                     syncPadLabel(pad);
                     saveProfile();
                     render();
@@ -311,43 +428,29 @@
                 };
             });
         }
-        function renderFallbacks() {
-            const el = document.getElementById('multipad-h3d-fallbacks');
+        function renderUnmappedPieces() {
+            const el = document.getElementById('multipad-h3d-unmapped-pieces');
+            const countEl = document.getElementById('multipad-h3d-unmapped-count');
             el.innerHTML = '';
-            const assigned = [];
-            for (const pad of profile.padProfile.pads) {
-                for (const piece of pad.pieces || []) {
-                    if (!assigned.includes(piece)) assigned.push(piece);
-                }
+            const assigned = directlyAssignedChartPieceSet();
+            const unmapped = allChartPieces().filter(piece => !assigned.has(piece));
+            if (countEl) countEl.textContent = `(${unmapped.length})`;
+            if (!unmapped.length) {
+                const empty = document.createElement('div');
+                empty.className = 'rounded border border-gray-800 bg-dark-800/30 px-2 py-2 text-xs text-gray-500';
+                empty.textContent = 'All chart pieces are mapped.';
+                el.appendChild(empty);
+                return;
             }
-            const assignedSet = new Set(assigned);
-            profile.padProfile.fallbacks = profile.padProfile.fallbacks || {};
-            for (const key of Object.keys(profile.padProfile.fallbacks)) {
-                if (!assignedSet.has(profile.padProfile.fallbacks[key])) delete profile.padProfile.fallbacks[key];
+            const list = document.createElement('div');
+            list.className = 'flex flex-wrap gap-1';
+            for (const piece of unmapped) {
+                const chip = document.createElement('span');
+                chip.className = 'rounded border border-gray-800 bg-dark-800/50 px-2 py-1 text-[10px] text-gray-400';
+                chip.textContent = friendly(piece);
+                list.appendChild(chip);
             }
-            for (const piece of padPieces) {
-                if (assignedSet.has(piece)) continue;
-                const current = profile.padProfile.fallbacks[piece] || '';
-                const row = document.createElement('div');
-                row.className = 'grid grid-cols-[1fr_1rem_1fr] items-center gap-2 px-2 py-1';
-                let opts = '<option value="">Drop</option>';
-                for (const target of assigned) {
-                    opts += `<option value="${target}"${target === current ? ' selected' : ''}>${friendly(target)}</option>`;
-                }
-                row.innerHTML =
-                    `<span class="text-xs text-gray-400">${friendly(piece)}</span>` +
-                    `<span class="text-xs text-gray-600 text-center">→</span>` +
-                    `<select data-from="${piece}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${opts}</select>`;
-                el.appendChild(row);
-            }
-            el.querySelectorAll('select').forEach(sel => {
-                sel.onchange = () => {
-                    if (sel.value) profile.padProfile.fallbacks[sel.dataset.from] = sel.value;
-                    else delete profile.padProfile.fallbacks[sel.dataset.from];
-                    saveProfile();
-                    renderFallbacks();
-                };
-            });
+            el.appendChild(list);
         }
         function rebuildPedals(count) {
             const current = profile.pedalProfile.pedals || [];
@@ -591,9 +694,9 @@
             renderLayoutControls();
             renderCustomGrid();
             renderPads();
-            renderFallbacks();
             renderPedals();
             renderTriggers();
+            renderUnmappedPieces();
         }
         function boot() {
             if (!window.multipadH3dGetProfile) {

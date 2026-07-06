@@ -81,7 +81,7 @@ Hit event and FX layer: Renders approaching notes, pad landing flashes, timing c
 
 Optional drum synth/audio feedback layer: Provides local audible pad feedback, probably by reusing the WebAudioFont drum-kit approach from the drum plugins. It must be optional and volume-controlled because the song audio remains the primary playback path.
 
-Settings UI: A `settings.html` panel for pad profile selection, pedal profile selection, external trigger profile selection, per-piece/per-pad display labels or colors if needed, camera/graphics options, and hit feedback intensity. MIDI device selection, learn mode, synth volume, and scoring controls should wait until input/scoring moves into scope.
+Settings UI: A `settings.html` panel for pad profile selection, pedal profile selection, external trigger profile selection, direct piece-to-surface assignment, per-surface colors, camera/graphics options, and hit feedback intensity. Pad assignments should be shown as a grid matching the selected pad layout, not as a linear drum-lane list. The settings panel should show a read-only unmapped-piece summary for chart pieces that are not directly assigned to any pad, pedal, or trigger; fallback routing remains renderer-owned behavior, not a separate settings editor. MIDI device selection, learn mode, synth volume, and scoring controls should wait until input/scoring moves into scope.
 
 Test and diagnostics hooks: A small `__test` export for pure data helpers and a `window.__multipadH3dTest` hook for browser tests to inject synthetic hit events, inspect projection state, and probe effects without physical hardware.
 
@@ -175,7 +175,7 @@ Phase 3: Build pure projection helpers. Implement pad profile validation for the
 
 Phase 4: Render the multipad highway MVP. Build the 3D pad grid, camera framing, front hit plane/pad surfaces, pedal/trigger surfaces, hit event placement, pooled note meshes, and demo fallback. Then wire it to real `bundle.drumTab` data, enable `matchesArrangement` only once the renderer is visible/useful, and confirm Auto mode stays narrow by instrument: `multipad_highway_3d` may auto-claim drum/percussion arrangements whenever it is installed, including when `drum_highway_3d` is also installed, but must not claim Lead, Rhythm, Bass, Combo, Guitar, or keys arrangements.
 
-Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, external trigger profile selection, configurable direct piece assignments and fallbacks, optional per-piece display labels/colors, camera/graphics controls, and feedback intensity settings.
+Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, external trigger profile selection, configurable direct piece assignments, optional per-surface colors, camera/graphics controls, and feedback intensity settings.
 
 Phase 5 first-draft requirements:
 
@@ -183,16 +183,18 @@ Phase 5 first-draft requirements:
 - The custom pad layout should use a click-and-drag grid UI so a user can create arbitrary active-cell patterns within the supported grid bounds.
 - Pedal selection is separate from pad layout. Users should be able to enable up to two pedals.
 - External trigger selection is separate from pad layout. Users should be able to enable up to two external pad triggers, and each trigger can be single-zone or two-zone.
-- Default piece and color mappings must match `drum_highway_3d`. Color/piece remapping should use the same basic settings interaction model as `drum_highway_3d`, adapted from linear lanes to a grid of pads.
+- Default piece and color mappings must match `drum_highway_3d`. Color/piece remapping should use the same basic settings interaction model as `drum_highway_3d`, adapted from linear lanes to a grid of pads. Pads may hold multiple chart pieces, shown as removable chips in the pad cell.
 - Unassigned pads, pedals, and trigger zones are valid. They must appear grayed out in settings and in the 3D highway. They must not send, receive, or route notes to their corresponding visual surfaces.
 - Multiple pedals mapped to the same piece are valid. For example, two pedals may both map to `kick`; either pedal can send kick events later, but the 3D UI still shows the standard kick pedal surface rather than two distinct kick surfaces.
 - If no pedal is mapped to `hh_pedal`, the special hi-hat pedal surface should not display as an active hi-hat surface.
-- Selecting or saving a profile makes that profile the new default instead of generic 3x3. The persisted profile contract must include required metadata fields `version`, `id`, and `name`, plus pad layout, pad piece assignments, pad display surface colors, pedal count/selection, pedal piece assignments, pedal display surface colors, external trigger count/selection, trigger zone mode, external trigger piece assignments, and external trigger display surface colors.
+- Selecting or saving a profile makes that profile the new default instead of generic 3x3. The persisted profile contract must include required metadata fields `version`, `id`, and `name`, plus pad layout, pad piece assignments, pad display surface colors, pedal count/selection, pedal piece assignments, pedal display surface colors, external trigger count/selection, trigger zone mode, external trigger piece assignments, external trigger display surface colors, and sanitized explicit fallback overrides for compatibility.
 
 Phase 5 output:
 
 - Settings now expose 3x3, 2x4, 4x3, and Custom pad layouts. Custom supports click-and-drag active-cell editing within the supported grid bounds.
-- Saved multipad profiles replace the default profile and include required `version`, `id`, and `name` metadata, pad layout, pad assignments/colors, pedal selection and assignments/colors, external trigger slots/zones, trigger assignments/colors, and pad fallbacks.
+- Saved multipad profiles replace the default profile and include required `version`, `id`, and `name` metadata, pad layout, pad assignments/colors, pedal selection and assignments/colors, external trigger slots/zones, trigger assignments/colors, and sanitized explicit fallback overrides for compatibility.
+- Pad assignment settings are rendered as a grid matching the selected layout, with row/column wording reserved for accessibility labels.
+- The always-visible "Unmapped chart pieces" summary reports direct assignment coverage across pads, pedals, and triggers. Renderer fallback routing remains centralized in `buildPieceToPadMap()`.
 - Unassigned pads, pedals, and trigger zones are valid inactive controls. They render gray in settings and the 3D surface model and are excluded from routing.
 - Duplicate pedal piece mappings are valid, including two pedals mapped to kick.
 - Default piece colors use the same default palette mapping as `drum_highway_3d`.
@@ -210,6 +212,17 @@ Phase 6 implementation note:
   surface exists. Without MIDI/scoring ownership, timing defaults to the same
   on-time green used by `drum_highway_3d` for OK/unknown timing; EARLY/LATE
   timing fields are accepted when supplied by chart/test data.
+
+Phase 6 output:
+
+- Pad, pedal, and trigger hits render as plain hits on their resolved surface;
+  articulation/cue variants are intentionally ignored for this MVP.
+- Hit flashes, timing colors, sparks, pedal/surface pulses, cinematic lighting,
+  and background ambience now follow the comparable `drum_highway_3d`
+  behavior.
+- Surface pulse reset restores intensity, opacity, scale, and emissive color
+  after timing pulses.
+- Grid rebuild creates fresh flash textures for rebuilt surface meshes.
 
 Phase 7: Stabilize the visual MVP. Run focused tests, verify desktop/mobile/splitscreen framing, tune performance, update docs/screenshots, and make sure the plugin works without MIDI hardware.
 
