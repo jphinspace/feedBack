@@ -1381,7 +1381,6 @@
         let keyLight = null;
         let bgGroup = null;
         let bgParticles = null;
-        let flashTexture = null;
         let activeFlashes = [];
         let flashedEventKeys = new Set();
         let flashProjection = null;
@@ -1664,11 +1663,10 @@
         }
 
         function createSurfaceFlashMesh(width, height, zOffset) {
-            if (!flashTexture) flashTexture = makeGaussTex(T, 128, 0.28);
             const geo = new T.PlaneGeometry(width, height);
             const mat = new T.MeshBasicMaterial({
                 color: TIMING_OK_COLOR,
-                map: flashTexture,
+                map: makeGaussTex(T, 128, 0.28),
                 transparent: true,
                 opacity: 0,
                 blending: T.AdditiveBlending,
@@ -1822,6 +1820,7 @@
                 edgeMaterial: edgeMat,
                 flashMesh,
                 baseOpacity: opacity,
+                baseEmissiveColor: colorHex,
                 baseEmissiveIntensity: 0.12,
             };
         }
@@ -1868,6 +1867,7 @@
                 material: mat,
                 flashMesh,
                 baseOpacity: opacity,
+                baseEmissiveColor: colorHex,
                 baseEmissiveIntensity: 0.16,
             };
         }
@@ -1911,6 +1911,9 @@
                     if (surface.material && surface.material.emissive) surface.material.emissive.setHex(SCENE_COLORS.inactiveSurface);
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(SCENE_COLORS.inactiveEdge);
                     if (surface.edgeMaterial) surface.edgeMaterial.opacity = 0.35;
+                }
+                if (surface.material && surface.material.emissive && typeof surface.material.emissive.getHex === 'function') {
+                    surface.baseEmissiveColor = surface.material.emissive.getHex();
                 }
                 surface.kind = desc.kind;
                 surfaces[surface.key] = surface;
@@ -2006,12 +2009,11 @@
             floorMesh.position.set(0, -0.05, -9);
             scene.add(floorMesh);
 
-            if (!flashTexture) flashTexture = makeGaussTex(T, 128, 0.28);
             floorFlash = new T.Mesh(
                 new T.PlaneGeometry(10, 7),
                 new T.MeshBasicMaterial({
                     color: KICK_COLOR,
-                    map: flashTexture,
+                    map: makeGaussTex(T, 128, 0.28),
                     transparent: true,
                     opacity: 0,
                     blending: T.AdditiveBlending,
@@ -2145,6 +2147,9 @@
         function resetSurfacePulses() {
             for (const id of Object.keys(surfaces)) {
                 const surface = surfaces[id];
+                if (surface.material.emissive && surface.baseEmissiveColor != null) {
+                    surface.material.emissive.setHex(surface.baseEmissiveColor);
+                }
                 surface.material.emissiveIntensity = surface.baseEmissiveIntensity;
                 surface.material.opacity = surface.baseOpacity;
                 surface.mesh.scale.set(1, 1, 1);
@@ -2394,7 +2399,6 @@
             keyLight = null;
             bgGroup = null;
             bgParticles = null;
-            flashTexture = null;
             activeFlashes = [];
             flashedEventKeys = new Set();
             flashProjection = null;
