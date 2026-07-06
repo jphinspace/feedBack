@@ -166,15 +166,15 @@
         const f = saved.filters;
         if (f && typeof f === 'object') {
             const arr = (x) => (Array.isArray(x) ? x.slice() : []);
-            // mastery + match are session-only facets (deliberately not
+            // mastery + match + genre are session-only facets (deliberately not
             // persisted), but the restored object must still CARRY the keys —
-            // the filter drawer indexes f.mastery/f.match unconditionally, so
-            // dropping them here breaks the drawer for anyone with saved prefs.
+            // the filter drawer indexes f.mastery/f.match/f.genre unconditionally,
+            // so dropping them here breaks the drawer for anyone with saved prefs.
             state.filters = {
                 arr_has: arr(f.arr_has), arr_lacks: arr(f.arr_lacks),
                 stem_has: arr(f.stem_has), stem_lacks: arr(f.stem_lacks),
                 lyrics: f.lyrics || '', tunings: arr(f.tunings),
-                mastery: [], match: [],
+                mastery: [], match: [], genre: [],
             };
         }
     }
@@ -2821,7 +2821,7 @@
             '<div class="flex items-center justify-between"><h3 class="text-lg font-semibold text-fb-text">Filters</h3>' +
             '<button data-drawer-close class="text-fb-textDim hover:text-fb-text">✕</button></div>' +
             section('Arrangements', ARRANGEMENTS.map((a) => triPill('arr', a, a, triState(f.arr_has, f.arr_lacks, a))).join('')) +
-            section('Stems (sloppak)', STEMS.map((s) => triPill('stem', s, s, triState(f.stem_has, f.stem_lacks, s))).join('')) +
+            section('Stems (feedpak)', STEMS.map((s) => triPill('stem', s, s, triState(f.stem_has, f.stem_lacks, s))).join('')) +
             section('Lyrics', ['', '1', '0'].map((v) => '<button data-lyrics="' + v + '" class="px-2 py-1 rounded-md text-xs border ' + (f.lyrics === v ? 'bg-fb-primary text-white border-fb-primary' : 'bg-gray-800/50 text-fb-textDim border-gray-700') + '">' + (v === '' ? 'Any' : v === '1' ? 'Has lyrics' : 'No lyrics') + '</button>').join('')) +
             // Progress (mastery bands) — multi-select; server filters via song_stats.
             section('Progress', [['mastered', 'Mastered'], ['in_progress', 'In progress'], ['not_started', 'Not started']].map((it) => '<button data-mastery="' + it[0] + '" class="px-2 py-1 rounded-md text-xs border ' + (f.mastery.includes(it[0]) ? 'bg-fb-primary text-white border-fb-primary' : 'bg-gray-800/50 text-fb-textDim border-gray-700') + '">' + it[1] + '</button>').join('')) +
