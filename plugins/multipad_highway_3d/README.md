@@ -6,7 +6,7 @@ multipad layout instead of a single horizontal lane row. Hi-hat pedal and kick
 hits are reserved for a separate pedal profile and render as top and bottom
 pedal surfaces.
 
-This directory currently contains the Phase 6 MVP renderer from
+This directory currently contains the Phase 7 MVP renderer from
 `PLANNING.md`:
 
 - `plugin.json` declares a visualization provider only.
@@ -21,8 +21,13 @@ This directory currently contains the Phase 6 MVP renderer from
 - The renderer builds the MVP 3x3 pad grid, per-pad tunnel guides, top/bottom
   pedal surfaces, side outline trigger surfaces, mirrored external trigger
   center/edge surfaces, pooled note meshes, timing-colored flashes, sparks,
-  pedal pulses, background particles, a demo fallback, and real
-  `bundle.drumTab` rendering.
+  pedal pulses, background particles, and real `bundle.drumTab` rendering.
+- Real feedpak drum hits are projected from the live `bundle.drumTab.hits`
+  stream by object identity plus hit count, because the host appends
+  `drum_hits` chunks into the same `drumTab` object as the song loads. A present
+  empty `hits` array is treated as a real chart, not a reason to show demo hits.
+- If a drum/percussion arrangement has no `bundle.drumTab`, the grid renders
+  without invented notes.
 - `settings.html` loads the plugin settings panel without depending on MIDI,
   WebGL, or runtime Tailwind. Pad assignments are shown as a grid matching the
   selected pad layout, with multi-piece pad assignments shown as chips.

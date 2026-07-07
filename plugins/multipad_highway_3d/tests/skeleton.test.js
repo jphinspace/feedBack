@@ -66,9 +66,9 @@ test('factory registers with a WebGL renderer and drum-chart auto-claim', () => 
     assert.equal(factory.contextType, 'webgl2');
     assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }), true);
     assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Percussion' }), true);
+    assert.equal(factory.matchesArrangement({ has_drum_tab: false, arrangement: 'Drums' }), false);
     assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Lead' }), false);
     assert.equal(factory.matchesArrangement({ has_drum_tab: true, arrangement: 'Bass' }), false);
-    assert.equal(factory.matchesArrangement({ has_drum_tab: false, arrangement: 'Drums' }), false);
     assert.equal(factory.__test.pluginId, 'multipad_highway_3d');
     assert.equal(factory.__test.contextType, 'webgl2');
 
@@ -92,7 +92,15 @@ test('renderer lifecycle exposes WebGL state and tears down idempotently without
         height: 180,
         hasBundle: true,
         surfaces: 0,
+        drumTabPresent: false,
+        drumTabHits: 0,
+        projectionSource: '',
         projectedHits: 0,
+        projectionStats: null,
+        profileId: 'generic-3x3',
+        padProfileId: 'generic-3x3',
+        pedalProfileId: 'generic-pedals',
+        triggerProfileId: 'generic-triggers',
         visibleNotes: 0,
         showLabels: true,
         cameraAngle: 0.35,
@@ -142,13 +150,64 @@ test('pad profile validation accepts m x n layouts and strips invalid entries', 
 test('default pad profile routes every known pad piece somewhere', () => {
     const t = loadFactory().__test;
     const routeMap = t.buildPieceToPadMap(t.DEFAULT_PAD_PROFILE);
+    const expectedSurfaces = {
+        snare: 'pad:8',
+        snare_xstick: 'pad:7',
+        hh_closed: 'pad:2',
+        hh_open: 'pad:2',
+        tom_hi: 'pad:4',
+        tom_mid: 'pad:5',
+        tom_low: 'pad:5',
+        tom_floor: 'pad:9',
+        stack: 'pad:1',
+        crash_l: 'pad:1',
+        crash_r: 'pad:3',
+        splash: 'pad:1',
+        china: 'pad:1',
+        ride: 'pad:6',
+        ride_bell: 'pad:6',
+        bell: 'pad:6',
+    };
     for (const piece of t.PAD_PIECES) {
         assert.ok(routeMap[piece], piece);
         assert.equal(routeMap[piece].routeType, 'pad');
         assert.match(routeMap[piece].pad.id, /^\d+$/);
+        assert.equal('pad:' + routeMap[piece].pad.id, expectedSurfaces[piece], piece);
     }
     assert.equal(routeMap.kick, undefined);
     assert.equal(routeMap.hh_pedal, undefined);
+});
+
+test('empty drum-tab hit streams are treated as real charts, not demo fallback', () => {
+    const t = loadFactory().__test;
+    assert.equal(t.hasDrumTabHitStream({ hits: [] }), true);
+    assert.equal(t.hasDrumTabHitStream({ hits: [{ t: 0, p: 'kick' }] }), true);
+    assert.equal(t.hasDrumTabHitStream(null), false);
+    assert.equal(t.hasDrumTabHitStream({}), false);
+});
+
+test('chart source selection only accepts bundle drum tabs', () => {
+    const t = loadFactory().__test;
+    const drumTab = { hits: [{ t: 0, p: 'kick' }] };
+    assert.deepEqual(plain(t.chartSourceFromBundle({ drumTab })), {
+        type: 'drumTab',
+        drumTab: { hits: [{ t: 0, p: 'kick' }] },
+        hitCount: 1,
+    });
+    assert.deepEqual(plain(t.chartSourceFromBundle({ drumTab: { hits: [] }, notes: [{ t: 0, s: 1, f: 12 }] })), {
+        type: 'drumTab',
+        drumTab: { hits: [] },
+        hitCount: 0,
+    });
+    assert.deepEqual(plain(t.chartSourceFromBundle({ notes: [{ t: 0, s: 1, f: 12 }] })), {
+        type: 'none',
+        drumTab: null,
+        hitCount: -1,
+    });
+    assert.equal(t.projectionCacheMatchesSource(
+        { type: 'drumTab', drumTab, hitCount: 1 },
+        { sourceType: 'drumTab', drumTab, hitCount: 1, settingsVersion: 0 }
+    ), true);
 });
 
 test('external trigger profile routes off-grid pad inputs by surface', () => {
@@ -401,6 +460,41 @@ test('inactive pads remain visible but do not route notes', () => {
         ],
     }, { padProfile: profile, pedalProfile: { pedals: [] }, triggerProfile: { triggers: [] } });
     assert.deepEqual(plain(projected.hitEvents.map(event => event.piece)), ['snare']);
+    assert.deepEqual(plain(projected.stats.unroutedPieces), { tom_hi: 1 });
+});
+
+test('projection stats expose zero-note routing failures', () => {
+    const t = loadFactory().__test;
+    const emptyProfile = t.validatePadProfile({
+        id: 'empty-grid',
+        name: 'Empty grid',
+        rows: 1,
+        cols: 1,
+        pads: [
+            { id: 'empty', row: 0, col: 0, pieces: [] },
+        ],
+    });
+    const projected = t.projectDrumTab({
+        hits: [
+            { t: 0, p: 'snare' },
+            { t: 0.5, p: 'hh_closed' },
+            { t: 1, p: 'kick' },
+        ],
+    }, {
+        padProfile: emptyProfile,
+        pedalProfile: { pedals: [] },
+        triggerProfile: { triggers: [] },
+    });
+
+    assert.equal(projected.hitEvents.length, 0);
+    assert.equal(projected.stats.rawHits, 3);
+    assert.equal(projected.stats.normalizedHits, 3);
+    assert.equal(projected.stats.projectedHits, 0);
+    assert.deepEqual(plain(projected.stats.unroutedPieces), {
+        snare: 1,
+        hh_closed: 1,
+        kick: 1,
+    });
 });
 
 test('variant classification ignores articulations for plain multipad hits', () => {
@@ -422,25 +516,45 @@ test('chart projection normalizes hits, sorts by time, and preserves piece ident
     const projected = t.projectDrumTab({
         hits: [
             { t: 2, p: 'snare', v: 200 },
+            { t: 1.506, p: 'stack', v: 90 },
             { t: 1.002, p: 'kick', v: 110 },
             { t: 1.003, p: 'hh_pedal', v: 90 },
             { t: 1.001, p: 'hh_open', v: 64 },
             { t: 1, p: 'hh_closed', g: true },
             { t: 0.5, p: 'ride_bell', v: 80 },
+            { t: 0.75, p: 'bell', v: 80 },
             { t: 'bad', p: 'snare' },
             { t: 3, p: 'future_piece' },
         ],
     }, { hitGroupWindowSec: 0.008 });
 
-    assert.deepEqual(plain(projected.hitEvents.map(e => e.piece)), ['ride_bell', 'hh_closed', 'hh_open', 'kick', 'hh_pedal', 'snare']);
-    assert.deepEqual(plain(projected.hitEvents.map(e => e.type)), ['pad', 'pad', 'pad', 'pedal', 'pedal', 'pad']);
+    assert.deepEqual(plain(projected.hitEvents.map(e => e.piece)), ['ride_bell', 'bell', 'hh_closed', 'hh_open', 'kick', 'hh_pedal', 'stack', 'snare']);
+    assert.deepEqual(plain(projected.hitEvents.map(e => e.type)), ['pad', 'pad', 'pad', 'pad', 'pedal', 'pedal', 'pad', 'pad']);
     assert.equal(projected.hitEvents[0].variant, 'normal');
     assert.equal(projected.hitEvents[1].variant, 'normal');
-    assert.equal(projected.hitEvents[2].open, true);
+    assert.equal(projected.hitEvents[3].open, true);
     assert.equal(projected.hitEvents[0].surfaceId, 'pad:6');
-    assert.equal(projected.hitEvents[3].surfaceId, 'outline-bottom');
-    assert.equal(projected.hitEvents[4].surfaceId, 'outline-top');
-    assert.equal(projected.hitEvents[5].velocity, 127);
+    assert.equal(projected.hitEvents[1].surfaceId, 'pad:6');
+    assert.equal(projected.hitEvents[4].surfaceId, 'outline-bottom');
+    assert.equal(projected.hitEvents[5].surfaceId, 'outline-top');
+    assert.equal(projected.hitEvents[6].surfaceId, 'pad:1');
+    assert.equal(projected.hitEvents[7].velocity, 127);
+    assert.equal(projected.stats.source, 'drumTab');
+    assert.equal(projected.stats.rawHits, 10);
+    assert.equal(projected.stats.normalizedHits, 8);
+    assert.equal(projected.stats.projectedHits, 8);
+    assert.equal(projected.stats.invalidHits, 1);
+    assert.deepEqual(plain(projected.stats.unknownPieces), { future_piece: 1 });
+    assert.deepEqual(plain(projected.stats.projectedPieces), {
+        ride_bell: 1,
+        bell: 1,
+        hh_closed: 1,
+        hh_open: 1,
+        kick: 1,
+        hh_pedal: 1,
+        stack: 1,
+        snare: 1,
+    });
 
     const hihatEvents = projected.hitEvents.filter(e => e.type === 'pad' && e.piece.startsWith('hh_'));
     assert.equal(hihatEvents[0].padId, hihatEvents[1].padId);
@@ -490,7 +604,9 @@ test('custom profile fallbacks route missing pieces without redefining drum ids'
             crash_r: 'crash_l',
             splash: 'crash_l',
             china: 'crash_l',
+            stack: 'crash_l',
             ride_bell: 'ride',
+            bell: 'ride',
         },
     });
     const projected = t.projectDrumTab({
@@ -502,7 +618,9 @@ test('custom profile fallbacks route missing pieces without redefining drum ids'
             { t: 4, p: 'splash' },
             { t: 5, p: 'china' },
             { t: 6, p: 'ride_bell' },
-            { t: 7, p: 'tom_floor' },
+            { t: 7, p: 'stack' },
+            { t: 8, p: 'bell' },
+            { t: 9, p: 'tom_floor' },
         ],
     }, { padProfile: profile });
 
@@ -514,6 +632,8 @@ test('custom profile fallbacks route missing pieces without redefining drum ids'
         'splash',
         'china',
         'ride_bell',
+        'stack',
+        'bell',
     ]);
     assert.deepEqual(plain(projected.hitEvents.map(e => e.routedPiece)), [
         'hh_closed',
@@ -521,6 +641,8 @@ test('custom profile fallbacks route missing pieces without redefining drum ids'
         'tom_mid',
         'crash_l',
         'crash_l',
+        'crash_l',
+        'ride',
         'crash_l',
         'ride',
     ]);

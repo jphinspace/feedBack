@@ -1,12 +1,19 @@
 // Multipad Highway 3D visualization plugin.
 //
-// Phase 4 MVP: validatePadProfile/validatePedalProfile/
-// validateTriggerProfile normalize the configurable surface,
-// buildPieceToPadMap/buildPieceToPedalMap/buildPieceToTriggerMap route drum
-// pieces, and the renderer projects those events into a 3D multipad highway.
+// Kept as one delivered script for the plugin loader. Internally, keep the
+// boundaries explicit:
+//   1. constants and drum vocabulary,
+//   2. profile/settings validation,
+//   3. chart source and projection helpers,
+//   4. Three.js renderer lifecycle,
+//   5. test and settings-panel APIs.
 
 (function () {
     'use strict';
+
+    // ---------------------------------------------------------------------
+    // Runtime Constants
+    // ---------------------------------------------------------------------
 
     /** Stable plugin id; must match plugin.json and the feedBackViz global name. */
     const PLUGIN_ID = 'multipad_highway_3d';
@@ -46,6 +53,10 @@
     /** Active renderer instances, used by tests and later split-screen hygiene. */
     const liveInstances = new Set();
 
+    // ---------------------------------------------------------------------
+    // Drum Vocabulary
+    // ---------------------------------------------------------------------
+
     /**
      * Canonical drum piece ids mirrored from `lib/drums.py` and
      * `drum_highway_3d`. The multipad plugin projects these ids onto a pad
@@ -56,8 +67,8 @@
         'snare', 'snare_xstick',
         'hh_closed', 'hh_open', 'hh_pedal',
         'tom_hi', 'tom_mid', 'tom_low', 'tom_floor',
-        'crash_l', 'crash_r', 'splash', 'china',
-        'ride', 'ride_bell',
+        'stack', 'crash_l', 'crash_r', 'splash', 'china',
+        'ride', 'ride_bell', 'bell',
     ];
     /** Fast membership lookup for validating hits and profile pieces. */
     const PIECE_SET = new Set(ALL_PIECES);
@@ -88,12 +99,14 @@
         tom_mid: 'TM2',
         tom_low: 'TM3',
         tom_floor: 'FT',
+        stack: 'STK',
         crash_l: 'CRl',
         crash_r: 'CRr',
         splash: 'SPL',
         china: 'CHN',
         ride: 'RD',
         ride_bell: 'BLL',
+        bell: 'BEL',
     };
     /**
      * MVP routing fallbacks for pieces that do not have their own built-in pad.
@@ -104,10 +117,12 @@
         snare_xstick: 'snare',
         hh_open: 'hh_closed',
         tom_low: 'tom_mid',
+        stack: 'crash_l',
         crash_r: 'crash_l',
         splash: 'crash_l',
         china: 'crash_l',
         ride_bell: 'ride',
+        bell: 'ride',
     };
 
     /**
@@ -122,12 +137,12 @@
         rows: 3,
         cols: 3,
         pads: Object.freeze([
-            Object.freeze({ id: '1', row: 0, col: 0, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china']) }),
+            Object.freeze({ id: '1', row: 0, col: 0, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china', 'stack']) }),
             Object.freeze({ id: '2', row: 0, col: 1, label: 'HH', pieces: Object.freeze(['hh_closed', 'hh_open']) }),
             Object.freeze({ id: '3', row: 0, col: 2, label: 'CRr', pieces: Object.freeze(['crash_r']) }),
             Object.freeze({ id: '4', row: 1, col: 0, label: 'TM1', pieces: Object.freeze(['tom_hi']) }),
             Object.freeze({ id: '5', row: 1, col: 1, label: 'TM2', pieces: Object.freeze(['tom_mid', 'tom_low']) }),
-            Object.freeze({ id: '6', row: 1, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell']) }),
+            Object.freeze({ id: '6', row: 1, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell', 'bell']) }),
             Object.freeze({ id: '7', row: 2, col: 0, label: 'XSTK', pieces: Object.freeze(['snare_xstick']) }),
             Object.freeze({ id: '8', row: 2, col: 1, label: 'SNR', pieces: Object.freeze(['snare']) }),
             Object.freeze({ id: '9', row: 2, col: 2, label: 'FT', pieces: Object.freeze(['tom_floor']) }),
@@ -145,8 +160,8 @@
             cols: 4,
             pads: Object.freeze([
                 Object.freeze({ id: '1', row: 0, col: 0, label: 'HH', pieces: Object.freeze(['hh_closed', 'hh_open']) }),
-                Object.freeze({ id: '2', row: 0, col: 1, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china']) }),
-                Object.freeze({ id: '3', row: 0, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell']) }),
+                Object.freeze({ id: '2', row: 0, col: 1, label: 'CRl', pieces: Object.freeze(['crash_l', 'splash', 'china', 'stack']) }),
+                Object.freeze({ id: '3', row: 0, col: 2, label: 'RD', pieces: Object.freeze(['ride', 'ride_bell', 'bell']) }),
                 Object.freeze({ id: '4', row: 0, col: 3, label: 'CRr', pieces: Object.freeze(['crash_r']) }),
                 Object.freeze({ id: '5', row: 1, col: 0, label: 'SNR', pieces: Object.freeze(['snare', 'snare_xstick']) }),
                 Object.freeze({ id: '6', row: 1, col: 1, label: 'TM1', pieces: Object.freeze(['tom_hi']) }),
@@ -164,10 +179,10 @@
             pads: Object.freeze([
                 Object.freeze({ id: '1', row: 0, col: 0, label: 'SPL', pieces: Object.freeze(['splash']) }),
                 Object.freeze({ id: '2', row: 0, col: 1, label: 'CRl', pieces: Object.freeze(['crash_l']) }),
-                Object.freeze({ id: '3', row: 0, col: 2, label: 'CRr', pieces: Object.freeze(['crash_r', 'china']) }),
+                Object.freeze({ id: '3', row: 0, col: 2, label: 'CRr', pieces: Object.freeze(['crash_r', 'china', 'stack']) }),
                 Object.freeze({ id: '4', row: 1, col: 0, label: 'HH', pieces: Object.freeze(['hh_closed', 'hh_open']) }),
                 Object.freeze({ id: '5', row: 1, col: 1, label: 'RD', pieces: Object.freeze(['ride']) }),
-                Object.freeze({ id: '6', row: 1, col: 2, label: 'BLL', pieces: Object.freeze(['ride_bell']) }),
+                Object.freeze({ id: '6', row: 1, col: 2, label: 'BLL', pieces: Object.freeze(['ride_bell', 'bell']) }),
                 Object.freeze({ id: '7', row: 2, col: 0, label: 'TM1', pieces: Object.freeze(['tom_hi']) }),
                 Object.freeze({ id: '8', row: 2, col: 1, label: 'TM2', pieces: Object.freeze(['tom_mid']) }),
                 Object.freeze({ id: '9', row: 2, col: 2, label: 'TM3', pieces: Object.freeze(['tom_low']) }),
@@ -287,8 +302,8 @@
         snare: 0, snare_xstick: 0,
         hh_closed: 7, hh_open: 7, hh_pedal: 7,
         tom_hi: 4, tom_mid: 2, tom_low: 5, tom_floor: 5,
-        crash_l: 1, crash_r: 1, splash: 1, china: 1,
-        ride: 3, ride_bell: 3,
+        stack: 1, crash_l: 1, crash_r: 1, splash: 1, china: 1,
+        ride: 3, ride_bell: 3, bell: 3,
     });
     const DEFAULT_PALETTE = Object.freeze([0xff2828, 0xffd400, 0x2080ff, 0xff8020, 0x30d040, 0xa040ff, 0xff6bd5, 0x6bffe6]);
     const KICK_COLOR = 0xffa030;
@@ -303,13 +318,20 @@
         tom_mid: DEFAULT_PALETTE[2],
         tom_low: DEFAULT_PALETTE[5],
         tom_floor: DEFAULT_PALETTE[5],
+        stack: DEFAULT_PALETTE[1],
         crash_l: DEFAULT_PALETTE[1],
         crash_r: DEFAULT_PALETTE[1],
         splash: DEFAULT_PALETTE[1],
         china: DEFAULT_PALETTE[1],
         ride: DEFAULT_PALETTE[3],
         ride_bell: DEFAULT_PALETTE[3],
+        bell: DEFAULT_PALETTE[3],
     });
+
+    // ---------------------------------------------------------------------
+    // Renderer Constants
+    // ---------------------------------------------------------------------
+
     const SCENE_COLORS = Object.freeze({
         clear: 0x080b12,
         fog: 0x101827,
@@ -339,8 +361,12 @@
     const TIMING_OK_COLOR = 0x22ff88;
     const TIMING_EARLY_COLOR = 0x35d6ff;
     const TIMING_LATE_COLOR = 0xffb84d;
-    const DEMO_PATTERN_SEC = 4;
     const RENDER_CURSOR_REBASE_SEC = 0.75;
+
+    // ---------------------------------------------------------------------
+    // Settings Keys
+    // ---------------------------------------------------------------------
+
     /** localStorage keys are namespaced so this plugin never collides with drum_h3d. */
     const LS_KEYS = Object.freeze({
         profile: 'multipad_h3d_profile_v1',
@@ -360,6 +386,10 @@
         backgroundIntensity: 'multipad_h3d_background_intensity',
         backgroundAmbience: 'multipad_h3d_background_ambience',
     });
+
+    // ---------------------------------------------------------------------
+    // Shared Utility Helpers
+    // ---------------------------------------------------------------------
 
     /**
      * Coerce a user-controlled numeric setting into a bounded value.
@@ -470,6 +500,10 @@
         const status = value.trim().toUpperCase();
         return status === 'EARLY' || status === 'LATE' || status === 'OK' ? status : '';
     }
+
+    // ---------------------------------------------------------------------
+    // Profile Cloning and Layout Helpers
+    // ---------------------------------------------------------------------
 
     /**
      * Return a mutable copy of a pad profile for callers/tests.
@@ -667,6 +701,10 @@
             surfaces,
         };
     }
+
+    // ---------------------------------------------------------------------
+    // Profile Validation
+    // ---------------------------------------------------------------------
 
     /**
      * Validate and normalize a pad layout.
@@ -886,6 +924,10 @@
         };
     }
 
+    // ---------------------------------------------------------------------
+    // Settings Persistence
+    // ---------------------------------------------------------------------
+
     /**
      * Safely read localStorage. Browsers may throw when storage is blocked, and
      * the VM tests provide no storage at all.
@@ -1037,6 +1079,10 @@
         settingsVersion++;
     }
 
+    // ---------------------------------------------------------------------
+    // Multipad Profile Persistence
+    // ---------------------------------------------------------------------
+
     function cloneMultipadProfile(profile) {
         return {
             version: 1,
@@ -1107,6 +1153,82 @@
         return true;
     }
 
+    // ---------------------------------------------------------------------
+    // Chart Source Selection
+    // ---------------------------------------------------------------------
+
+    function hasDrumTabHitStream(drumTab) {
+        return !!(drumTab && Array.isArray(drumTab.hits));
+    }
+
+    function chartSourceFromBundle(bundle) {
+        const drumTab = bundle && bundle.drumTab;
+        if (!hasDrumTabHitStream(drumTab)) {
+            return {
+                type: 'none',
+                drumTab: null,
+                hitCount: -1,
+            };
+        }
+        return {
+            type: 'drumTab',
+            drumTab,
+            hitCount: drumTab.hits.length,
+        };
+    }
+
+    function projectionCacheMatchesSource(source, cache) {
+        return !!(
+            source
+            && cache
+            && cache.sourceType === source.type
+            && cache.drumTab === source.drumTab
+            && cache.hitCount === source.hitCount
+            && cache.settingsVersion === settingsVersion
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Projection Diagnostics
+    // ---------------------------------------------------------------------
+
+    function incrementCount(map, key) {
+        if (!key) return;
+        map[key] = (map[key] || 0) + 1;
+    }
+
+    function countMapKeys(map) {
+        return map && typeof map === 'object' ? Object.keys(map).length : 0;
+    }
+
+    function routePieceCount(routeMap) {
+        return routeMap && typeof routeMap === 'object' ? Object.keys(routeMap).length : 0;
+    }
+
+    function projectionStats(source, rawHits, padProfile, pedalProfile, triggerProfile, pieceToPad, pieceToPedal, pieceToTrigger) {
+        return {
+            source,
+            rawHits,
+            normalizedHits: 0,
+            projectedHits: 0,
+            invalidHits: 0,
+            unknownPieces: Object.create(null),
+            unroutedPieces: Object.create(null),
+            projectedPieces: Object.create(null),
+            profileId: padProfile.id,
+            padProfileId: padProfile.id,
+            pedalProfileId: pedalProfile.id,
+            triggerProfileId: triggerProfile.id,
+            routedPadPieces: routePieceCount(pieceToPad),
+            routedPedalPieces: routePieceCount(pieceToPedal),
+            routedTriggerPieces: routePieceCount(pieceToTrigger),
+        };
+    }
+
+    // ---------------------------------------------------------------------
+    // Piece-To-Surface Routing
+    // ---------------------------------------------------------------------
+
     /**
      * Build piece -> pad routing for a pad profile.
      *
@@ -1173,6 +1295,10 @@
         }
         return routed;
     }
+
+    // ---------------------------------------------------------------------
+    // Drum Hit Projection
+    // ---------------------------------------------------------------------
 
     /**
      * Multipad intentionally ignores drum articulations/cues for MVP visuals.
@@ -1279,7 +1405,8 @@
      * @param {object} [options.pedalProfile] - Optional pedal profile.
      * @param {object} [options.triggerProfile] - Optional external trigger profile.
      * @param {number} [options.hitGroupWindowSec] - Grouping tolerance.
-     * @returns {{padProfile: object, pedalProfile: object, triggerProfile: object, hitEvents: Array<object>, hitGroups: Array<object>}}
+     * @param {string} [options.source] - Data source label for diagnostics.
+     * @returns {{padProfile: object, pedalProfile: object, triggerProfile: object, hitEvents: Array<object>, hitGroups: Array<object>, stats: object}}
      */
     function projectDrumTab(drumTab, options) {
         const opts = options && typeof options === 'object' ? options : {};
@@ -1297,10 +1424,29 @@
         );
         const hits = drumTab && Array.isArray(drumTab.hits) ? drumTab.hits : [];
         const hitEvents = [];
+        const stats = projectionStats(
+            opts.source || 'drumTab',
+            hits.length,
+            padProfile,
+            pedalProfile,
+            triggerProfile,
+            pieceToPad,
+            pieceToPedal,
+            pieceToTrigger
+        );
 
         for (const rawHit of hits) {
             const hit = normalizeHit(rawHit);
-            if (!hit) continue;
+            if (!hit) {
+                const piece = rawHit && rawHit.p;
+                if (typeof piece === 'string' && piece && !PIECE_SET.has(piece)) {
+                    incrementCount(stats.unknownPieces, piece);
+                } else {
+                    stats.invalidHits++;
+                }
+                continue;
+            }
+            stats.normalizedHits++;
             const pedal = pieceToPedal[hit.piece];
             if (pedal) {
                 hitEvents.push({
@@ -1318,6 +1464,8 @@
                     open: false,
                     timingStatus: hit.timingStatus,
                 });
+                stats.projectedHits++;
+                incrementCount(stats.projectedPieces, hit.piece);
                 continue;
             }
             const trigger = pieceToTrigger[hit.piece];
@@ -1337,10 +1485,15 @@
                     open: hit.open,
                     timingStatus: hit.timingStatus,
                 });
+                stats.projectedHits++;
+                incrementCount(stats.projectedPieces, hit.piece);
                 continue;
             }
             const route = pieceToPad[hit.piece];
-            if (!route) continue;
+            if (!route) {
+                incrementCount(stats.unroutedPieces, hit.piece);
+                continue;
+            }
             hitEvents.push({
                 type: 'pad',
                 padId: route.pad.id,
@@ -1357,6 +1510,8 @@
                 open: hit.open,
                 timingStatus: hit.timingStatus,
             });
+            stats.projectedHits++;
+            incrementCount(stats.projectedPieces, hit.piece);
         }
 
         hitEvents.sort((a, b) => a.t - b.t || a.piece.localeCompare(b.piece));
@@ -1367,6 +1522,7 @@
             triggerProfile,
             hitEvents,
             hitGroups,
+            stats,
         };
     }
 
@@ -1386,6 +1542,10 @@
         const arr = songInfo.arrangement || songInfo.arrangement_smart_name || '';
         return /\b(?:drums?|percussion)\b/i.test(arr);
     }
+
+    // ---------------------------------------------------------------------
+    // Three.js Renderer
+    // ---------------------------------------------------------------------
 
     /**
      * Build one renderer instance for the host setRenderer lifecycle.
@@ -1416,11 +1576,12 @@
         let noteMaterials = new Map();
         let noteMeshPool = [];
         let cachedDrumTab = null;
+        let cachedDrumHitCount = -1;
+        let cachedProjectionSource = '';
         let cachedProjection = null;
         let cachedSettingsVersion = -1;
-        let demoProjection = null;
-        let demoSettingsVersion = -1;
-        let demoSurfaceLayoutKey = null;
+        let lastProjectionStats = null;
+        let lastZeroProjectionWarningKey = '';
         let activeSurfaceLayoutKey = null;
         let renderCursorProjection = null;
         let renderCursorIndex = 0;
@@ -1447,18 +1608,6 @@
         let kickPulse = 0;
         let baseCameraY = 0;
         let floorFlash = null;
-
-        /**
-         * Return a monotonic wall-clock time for demo playback.
-         *
-         * @returns {number} Seconds.
-         */
-        function nowSec() {
-            if (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') {
-                return performance.now() / 1000;
-            }
-            return Date.now() / 1000;
-        }
 
         /**
          * Dispose a Three.js material and its texture map once.
@@ -2215,65 +2364,65 @@
         }
 
         /**
-         * Return projected hit events for the current bundle or demo pattern.
+         * Return projected hit events for the current bundle.
          *
-         * The real chart projection is cached by drum-tab object identity.
+         * The real chart projection is cached by drum-tab object identity and
+         * hit count. The host streams drum hits by mutating `drumTab.hits` in
+         * chunks, so object identity alone can leave the renderer stuck on the
+         * first partial chunk of a real feedpak.
          *
          * @param {object|null} bundle - Host render bundle.
          * @returns {object|null} Projection returned by `projectDrumTab`.
          */
+        function rememberProjection(projection) {
+            lastProjectionStats = projection && projection.stats ? projection.stats : null;
+            if (!lastProjectionStats || lastProjectionStats.rawHits <= 0 || lastProjectionStats.projectedHits > 0) return;
+            const warningKey = [
+                lastProjectionStats.source,
+                lastProjectionStats.rawHits,
+                settingsVersion,
+                countMapKeys(lastProjectionStats.unknownPieces),
+                countMapKeys(lastProjectionStats.unroutedPieces),
+            ].join('|');
+            if (warningKey === lastZeroProjectionWarningKey) return;
+            lastZeroProjectionWarningKey = warningKey;
+            console.warn('[Multipad-Hwy3D] projected zero notes from drum chart', lastProjectionStats);
+        }
+
         function projectionForBundle(bundle) {
-            const drumTab = bundle && bundle.drumTab;
-            if (drumTab && Array.isArray(drumTab.hits) && drumTab.hits.length > 0) {
-                if (cachedDrumTab !== drumTab || cachedSettingsVersion !== settingsVersion) {
+            const source = chartSourceFromBundle(bundle);
+            if (source.type === 'drumTab') {
+                if (!projectionCacheMatchesSource(source, {
+                    sourceType: cachedProjectionSource,
+                    drumTab: cachedDrumTab,
+                    hitCount: cachedDrumHitCount,
+                    settingsVersion: cachedSettingsVersion,
+                })) {
                     const settings = readSettings();
                     const profile = readMultipadProfile();
-                    cachedDrumTab = drumTab;
+                    cachedProjectionSource = source.type;
+                    cachedDrumTab = source.drumTab;
+                    cachedDrumHitCount = source.hitCount;
                     cachedSettingsVersion = settingsVersion;
-                    cachedProjection = projectDrumTab(drumTab, {
+                    cachedProjection = projectDrumTab(source.drumTab, {
                         padProfile: profile.padProfile,
                         pedalProfile: profile.pedalProfile,
                         triggerProfile: profile.triggerProfile,
                         hitGroupWindowSec: settings.hitGroupWindowMs / 1000,
+                        source: source.type,
                     });
                     buildSurfaceGrid(cachedProjection.padProfile, cachedProjection.pedalProfile, cachedProjection.triggerProfile);
+                    rememberProjection(cachedProjection);
                 }
                 return cachedProjection;
             }
+            cachedProjectionSource = '';
             cachedDrumTab = null;
+            cachedDrumHitCount = -1;
             cachedProjection = null;
+            lastProjectionStats = null;
             cachedSettingsVersion = settingsVersion;
-            if (!demoProjection || demoSettingsVersion !== settingsVersion) {
-                const profile = readMultipadProfile();
-                demoSettingsVersion = settingsVersion;
-                demoSurfaceLayoutKey = null;
-                demoProjection = projectDrumTab({
-                    hits: [
-                        { t: 0.00, p: 'hh_closed', v: 88 },
-                        { t: 0.00, p: 'kick', v: 112 },
-                        { t: 0.50, p: 'snare', v: 110 },
-                        { t: 1.00, p: 'hh_open', v: 72 },
-                        { t: 1.00, p: 'tom_hi', v: 96 },
-                        { t: 1.50, p: 'snare_xstick', v: 78 },
-                        { t: 2.00, p: 'crash_l', v: 118 },
-                        { t: 2.00, p: 'kick', v: 118 },
-                        { t: 2.50, p: 'tom_mid', v: 92 },
-                        { t: 3.00, p: 'ride_bell', v: 92 },
-                        { t: 3.50, p: 'tom_floor', v: 108 },
-                        { t: 3.50, p: 'hh_pedal', v: 92 },
-                    ],
-                }, {
-                    padProfile: profile.padProfile,
-                    pedalProfile: profile.pedalProfile,
-                    triggerProfile: profile.triggerProfile,
-                    hitGroupWindowSec: DEFAULT_SETTINGS.hitGroupWindowMs / 1000,
-                });
-            }
-            if (!demoSurfaceLayoutKey || activeSurfaceLayoutKey !== demoSurfaceLayoutKey) {
-                buildSurfaceGrid(demoProjection.padProfile, demoProjection.pedalProfile, demoProjection.triggerProfile);
-                demoSurfaceLayoutKey = activeSurfaceLayoutKey;
-            }
-            return demoProjection;
+            return null;
         }
 
         /**
@@ -2449,43 +2598,25 @@
             resetSurfacePulses();
             if (!projection) return;
 
-            const realHits = bundle && bundle.drumTab && Array.isArray(bundle.drumTab.hits) && bundle.drumTab.hits.length > 0;
-            const t = realHits && Number.isFinite(bundle.currentTime)
+            const t = Number.isFinite(bundle && bundle.currentTime)
                 ? bundle.currentTime
-                : nowSec() % DEMO_PATTERN_SEC;
+                : 0;
             const events = projection.hitEvents;
-            if (flashProjection !== projection || t < flashTime - 0.05 || Math.abs(t - flashTime) > DEMO_PATTERN_SEC * 2) {
+            if (flashProjection !== projection || t < flashTime - 0.05 || Math.abs(t - flashTime) > RENDER_CURSOR_REBASE_SEC) {
                 flashedEventKeys = new Set();
                 activeFlashes = [];
                 flashProjection = projection;
             }
             flashTime = t;
-            if (realHits) {
-                const startIndex = visibleEventStartIndex(projection, t);
-                for (let i = startIndex; i < events.length; i++) {
-                    const event = events[i];
-                    const dt = event.t - t;
-                    if (dt > NOTE_AHEAD_SEC) break;
-                    if (dt < -NOTE_BEHIND_SEC) continue;
-                    placeNote(event, dt);
-                    applyEventPulse(event, dt);
-                    maybeTriggerEventFx(event, dt, 0);
-                }
-                return;
-            }
-
-            renderCursorProjection = null;
-            renderCursorIndex = 0;
-            renderCursorTime = -Infinity;
-            for (let cycle = -1; cycle <= 1; cycle++) {
-                const base = cycle * DEMO_PATTERN_SEC;
-                for (const event of events) {
-                    const dt = event.t + base - t;
-                    if (dt > NOTE_AHEAD_SEC || dt < -NOTE_BEHIND_SEC) continue;
-                    placeNote(event, dt);
-                    applyEventPulse(event, dt);
-                    maybeTriggerEventFx(event, dt, base);
-                }
+            const startIndex = visibleEventStartIndex(projection, t);
+            for (let i = startIndex; i < events.length; i++) {
+                const event = events[i];
+                const dt = event.t - t;
+                if (dt > NOTE_AHEAD_SEC) break;
+                if (dt < -NOTE_BEHIND_SEC) continue;
+                placeNote(event, dt);
+                applyEventPulse(event, dt);
+                maybeTriggerEventFx(event, dt, 0);
             }
         }
 
@@ -2552,9 +2683,11 @@
             floorFlash = null;
             noteMeshPool = [];
             cachedDrumTab = null;
+            cachedDrumHitCount = -1;
+            cachedProjectionSource = '';
             cachedProjection = null;
-            demoProjection = null;
-            demoSurfaceLayoutKey = null;
+            lastProjectionStats = null;
+            lastZeroProjectionWarningKey = '';
             renderCursorProjection = null;
             renderCursorIndex = 0;
             renderCursorTime = -Infinity;
@@ -2646,7 +2779,15 @@
                     height: lastHeight,
                     hasBundle: !!lastBundle,
                     surfaces: Object.keys(surfaces).length,
+                    drumTabPresent: !!(lastBundle && lastBundle.drumTab),
+                    drumTabHits: hasDrumTabHitStream(lastBundle && lastBundle.drumTab) ? lastBundle.drumTab.hits.length : 0,
+                    projectionSource: cachedProjectionSource,
                     projectedHits: cachedProjection ? cachedProjection.hitEvents.length : 0,
+                    projectionStats: lastProjectionStats,
+                    profileId: lastProjectionStats ? lastProjectionStats.profileId : activeSettings.profileId,
+                    padProfileId: lastProjectionStats ? lastProjectionStats.padProfileId : activeSettings.padProfileId,
+                    pedalProfileId: lastProjectionStats ? lastProjectionStats.pedalProfileId : activeSettings.pedalProfileId,
+                    triggerProfileId: lastProjectionStats ? lastProjectionStats.triggerProfileId : activeSettings.triggerProfileId,
                     visibleNotes: visibleNoteCount,
                     showLabels: !!activeSettings.showLabels,
                     cameraAngle: activeSettings.cameraAngle,
@@ -2664,106 +2805,128 @@
         return instance;
     }
 
+    // ---------------------------------------------------------------------
+    // Public and Test APIs
+    // ---------------------------------------------------------------------
+
+    function createTestApi() {
+        return {
+            pluginId: PLUGIN_ID,
+            contextType: CONTEXT_TYPE,
+            matchesArrangement,
+            ALL_PIECES: ALL_PIECES.slice(),
+            PAD_PIECES: PAD_PIECES.slice(),
+            PEDAL_PIECES: PEDAL_PIECES.slice(),
+            PEDAL_SURFACES: PEDAL_SURFACES.slice(),
+            TRIGGER_SURFACES: TRIGGER_SURFACES.slice(),
+            PIECE_LABELS: Object.assign({}, PIECE_LABELS),
+            DEFAULT_PAD_PROFILE: clonePadProfile(DEFAULT_PAD_PROFILE),
+            DEFAULT_PEDAL_PROFILE: clonePedalProfile(DEFAULT_PEDAL_PROFILE),
+            DEFAULT_TRIGGER_PROFILE: cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE),
+            DEFAULT_SETTINGS: Object.assign({}, DEFAULT_SETTINGS),
+            DEFAULT_PROFILE: cloneMultipadProfile(DEFAULT_PROFILE),
+            BUILTIN_PAD_PROFILE_IDS: Object.keys(BUILTIN_PAD_PROFILES),
+            validatePadProfile,
+            validatePedalProfile,
+            validateTriggerProfile,
+            validateMultipadProfile,
+            colorHexFromCss,
+            cssColorFromHex,
+            readSettings,
+            readMultipadProfile,
+            writeMultipadProfile,
+            writeSetting,
+            buildPieceToPadMap,
+            buildPieceToPedalMap,
+            buildPieceToTriggerMap,
+            hasDrumTabHitStream,
+            chartSourceFromBundle,
+            projectionCacheMatchesSource,
+            buildSurfaceLayout,
+            padProfileLayoutKey,
+            lowerBoundHitEvents,
+            normalizeTimingStatus,
+            hitVariant,
+            normalizeHit,
+            groupHitEvents,
+            projectDrumTab,
+            liveInstanceCount() {
+                return liveInstances.size;
+            },
+        };
+    }
+
+    function installSettingsGlobals(target) {
+        target.multipadH3dGetProfile = function () {
+            return cloneMultipadProfile(readMultipadProfile());
+        };
+        target.multipadH3dSetProfile = function (raw) {
+            return writeMultipadProfile(raw);
+        };
+        target.multipadH3dResetProfile = function () {
+            return writeMultipadProfile(DEFAULT_PROFILE);
+        };
+        target.multipadH3dCreateProfileForLayout = function (layoutId) {
+            return cloneMultipadProfile(profileForPadLayout(layoutId));
+        };
+        target.multipadH3dGetPadLayouts = function () {
+            return Object.keys(BUILTIN_PAD_PROFILES).map(id => ({
+                id,
+                name: BUILTIN_PAD_PROFILES[id].name,
+                rows: BUILTIN_PAD_PROFILES[id].rows,
+                cols: BUILTIN_PAD_PROFILES[id].cols,
+            }));
+        };
+        target.multipadH3dGetAllPieces = function () {
+            return ALL_PIECES.slice();
+        };
+        target.multipadH3dGetPadPieces = function () {
+            return PAD_PIECES.slice();
+        };
+        target.multipadH3dGetPedalPieces = function () {
+            return PEDAL_PIECES.slice();
+        };
+        target.multipadH3dGetPieceLabels = function () {
+            return Object.assign({}, PIECE_LABELS);
+        };
+        target.multipadH3dGetPieceColors = function () {
+            const out = {};
+            for (const piece of ALL_PIECES) out[piece] = cssColorFromHex(PIECE_COLORS[piece]);
+            return out;
+        };
+        target.multipadH3dGetSettings = function () {
+            return Object.assign({}, readSettings());
+        };
+        target.multipadH3dSetSetting = function (key, value) {
+            writeSetting(key, value);
+        };
+        target.multipadH3dGetSceneThemes = function () {
+            return Object.keys(SCENE_THEMES);
+        };
+    }
+
+    function createRuntimeProbeApi() {
+        return {
+            getState() {
+                const instances = Array.from(liveInstances)
+                    .map(inst => inst && typeof inst.__probe === 'function' ? inst.__probe() : null)
+                    .filter(Boolean);
+                return {
+                    pluginId: PLUGIN_ID,
+                    contextType: CONTEXT_TYPE,
+                    liveInstances: liveInstances.size,
+                    autoClaims: matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }),
+                    instances,
+                };
+            },
+        };
+    }
+
     createFactory.contextType = CONTEXT_TYPE;
     createFactory.matchesArrangement = matchesArrangement;
-    createFactory.__test = {
-        pluginId: PLUGIN_ID,
-        contextType: CONTEXT_TYPE,
-        matchesArrangement,
-        ALL_PIECES: ALL_PIECES.slice(),
-        PAD_PIECES: PAD_PIECES.slice(),
-        PEDAL_PIECES: PEDAL_PIECES.slice(),
-        PEDAL_SURFACES: PEDAL_SURFACES.slice(),
-        TRIGGER_SURFACES: TRIGGER_SURFACES.slice(),
-        PIECE_LABELS: Object.assign({}, PIECE_LABELS),
-        DEFAULT_PAD_PROFILE: clonePadProfile(DEFAULT_PAD_PROFILE),
-        DEFAULT_PEDAL_PROFILE: clonePedalProfile(DEFAULT_PEDAL_PROFILE),
-        DEFAULT_TRIGGER_PROFILE: cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE),
-        DEFAULT_SETTINGS: Object.assign({}, DEFAULT_SETTINGS),
-        DEFAULT_PROFILE: cloneMultipadProfile(DEFAULT_PROFILE),
-        BUILTIN_PAD_PROFILE_IDS: Object.keys(BUILTIN_PAD_PROFILES),
-        validatePadProfile,
-        validatePedalProfile,
-        validateTriggerProfile,
-        validateMultipadProfile,
-        colorHexFromCss,
-        cssColorFromHex,
-        readSettings,
-        readMultipadProfile,
-        writeMultipadProfile,
-        writeSetting,
-        buildPieceToPadMap,
-        buildPieceToPedalMap,
-        buildPieceToTriggerMap,
-        buildSurfaceLayout,
-        padProfileLayoutKey,
-        lowerBoundHitEvents,
-        normalizeTimingStatus,
-        hitVariant,
-        normalizeHit,
-        groupHitEvents,
-        projectDrumTab,
-        liveInstanceCount() {
-            return liveInstances.size;
-        },
-    };
+    createFactory.__test = createTestApi();
 
-    window.multipadH3dGetProfile = function () {
-        return cloneMultipadProfile(readMultipadProfile());
-    };
-    window.multipadH3dSetProfile = function (raw) {
-        return writeMultipadProfile(raw);
-    };
-    window.multipadH3dResetProfile = function () {
-        return writeMultipadProfile(DEFAULT_PROFILE);
-    };
-    window.multipadH3dCreateProfileForLayout = function (layoutId) {
-        return cloneMultipadProfile(profileForPadLayout(layoutId));
-    };
-    window.multipadH3dGetPadLayouts = function () {
-        return Object.keys(BUILTIN_PAD_PROFILES).map(id => ({
-            id,
-            name: BUILTIN_PAD_PROFILES[id].name,
-            rows: BUILTIN_PAD_PROFILES[id].rows,
-            cols: BUILTIN_PAD_PROFILES[id].cols,
-        }));
-    };
-    window.multipadH3dGetAllPieces = function () {
-        return ALL_PIECES.slice();
-    };
-    window.multipadH3dGetPadPieces = function () {
-        return PAD_PIECES.slice();
-    };
-    window.multipadH3dGetPedalPieces = function () {
-        return PEDAL_PIECES.slice();
-    };
-    window.multipadH3dGetPieceLabels = function () {
-        return Object.assign({}, PIECE_LABELS);
-    };
-    window.multipadH3dGetPieceColors = function () {
-        const out = {};
-        for (const piece of ALL_PIECES) out[piece] = cssColorFromHex(PIECE_COLORS[piece]);
-        return out;
-    };
-    window.multipadH3dGetSettings = function () {
-        return Object.assign({}, readSettings());
-    };
-    window.multipadH3dSetSetting = function (key, value) {
-        writeSetting(key, value);
-    };
-    window.multipadH3dGetSceneThemes = function () {
-        return Object.keys(SCENE_THEMES);
-    };
-
+    installSettingsGlobals(window);
     window.feedBackViz_multipad_highway_3d = createFactory;
-    window.__multipadH3dTest = {
-        getState() {
-            return {
-                pluginId: PLUGIN_ID,
-                contextType: CONTEXT_TYPE,
-                liveInstances: liveInstances.size,
-                autoClaims: matchesArrangement({ has_drum_tab: true, arrangement: 'Drums' }),
-            };
-        },
-    };
+    window.__multipadH3dTest = createRuntimeProbeApi();
 })();

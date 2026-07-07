@@ -37,7 +37,7 @@ Keep the plugin contract boring and explicit. A visualization plugin should decl
 
 Prefer capability domains over private browser APIs when the plugin eventually owns input or scoring behavior. MIDI should go through the core `midi-input` domain as a requester, mirroring `drum_highway_3d` and the upstream 2D drums plugin. If the plugin later emits scored hits/misses, declare and implement the relevant `note-detection` behavior rather than using an untracked window-global side channel. For the MVP, prioritize the UI/visualization path and avoid new MIDI or note-detection claims.
 
-Treat the highway bundle as read-only. For drum charts, prefer `bundle.drumTab` over decoding guitar-style `bundle.notes`; `static/highway.js` streams drum tab metadata and chunked hits from the server, and `lib/drums.py` is the canonical vocabulary for piece ids, default GM MIDI notes, categories, shapes, colors, presets, and wire normalization.
+Treat the highway bundle as read-only. For drum charts, consume `bundle.drumTab` and do not decode guitar-style `bundle.notes`; `static/highway.js` streams drum tab metadata and chunked hits from the server, and `lib/drums.py` is the canonical vocabulary for piece ids, default GM MIDI notes, categories, shapes, colors, presets, and wire normalization.
 
 Make renderer state instance-safe. Splitscreen and renderer rehydration mean a plugin can be initialized more than once. Keep per-renderer scene state inside the factory instance, use module-level singletons only for browser-unique resources such as MIDI access or shared audio samples, and make every async open/connect path generation-safe so a late result cannot reattach a destroyed renderer.
 
@@ -162,7 +162,7 @@ Phase 1 output (locked):
 
 MVP visual projection rules:
 
-- Use the existing `drum_highway_3d` piece vocabulary as the source of truth: `kick`, `snare`, `snare_xstick`, `hh_closed`, `hh_open`, `hh_pedal`, `tom_hi`, `tom_mid`, `tom_low`, `tom_floor`, `crash_l`, `crash_r`, `splash`, `china`, `ride`, and `ride_bell`.
+- Use the existing drum piece vocabulary as the source of truth: `kick`, `snare`, `snare_xstick`, `hh_closed`, `hh_open`, `hh_pedal`, `tom_hi`, `tom_mid`, `tom_low`, `tom_floor`, `stack`, `crash_l`, `crash_r`, `splash`, `china`, `ride`, `ride_bell`, and `bell`.
 - Use existing `drum_highway_3d` display labels where labels are needed. Do not make mockup labels such as TL/TC/TR canonical ids or persisted schema values.
 - Use the existing `drum_highway_3d` default kit/fallback behavior as the initial chart-routing behavior. The visual layer may arrange routed pad pieces onto the active pad grid, but should not redefine what the pieces or MIDI notes mean. Even when the MVP profile maps more pieces directly, custom profiles should be able to fall back in the same way as drum kits when they expose fewer surfaces.
 - MVP-specific render surfaces are the pad highway/hit plane plus pedal and external-trigger surfaces. The pads display existing pad pieces, the top outline surface displays `hh_pedal`, the bottom outline surface displays `kick`, side outline surfaces can display external triggers, and the left/right external pad center/edge surfaces provide non-overlapping dual-zone external-trigger options; neither the pads nor the surfaces are new drum piece ids.
@@ -173,7 +173,7 @@ Phase 2: Add the plugin skeleton. Create `plugin.json`, `screen.js`, `settings.h
 
 Phase 3: Build pure projection helpers. Implement pad profile validation for the MVP generic 3x3 layout, generic pedal profile validation with `surface: "outline-top"` / `surface: "outline-bottom"`, generic empty external trigger profile validation with surface-based custom trigger support, `drum_highway_3d`-compatible chart-to-pad projection, hit variant classification, hit group grouping, and localStorage-safe settings. Add the VM tests before connecting WebGL.
 
-Phase 4: Render the multipad highway MVP. Build the 3D pad grid, camera framing, front hit plane/pad surfaces, pedal/trigger surfaces, hit event placement, pooled note meshes, and demo fallback. Then wire it to real `bundle.drumTab` data, enable `matchesArrangement` only once the renderer is visible/useful, and confirm Auto mode stays narrow by instrument: `multipad_highway_3d` may auto-claim drum/percussion arrangements whenever it is installed, including when `drum_highway_3d` is also installed, but must not claim Lead, Rhythm, Bass, Combo, Guitar, or keys arrangements.
+Phase 4: Render the multipad highway MVP. Build the 3D pad grid, camera framing, front hit plane/pad surfaces, pedal/trigger surfaces, hit event placement, and pooled note meshes. Then wire it to real `bundle.drumTab` data, enable `matchesArrangement` only once the renderer is visible/useful, and confirm Auto mode stays narrow by instrument: `multipad_highway_3d` may auto-claim drum/percussion arrangements whenever it is installed, including when `drum_highway_3d` is also installed, but must not claim Lead, Rhythm, Bass, Combo, Guitar, or keys arrangements.
 
 Phase 5: Add settings and profile controls. Build pad profile selection starting with the MVP generic 3x3 layout, generic pedal profile selection, external trigger profile selection, configurable direct piece assignments, optional per-surface colors, camera/graphics controls, and feedback intensity settings.
 
@@ -225,6 +225,36 @@ Phase 6 output:
 - Grid rebuild creates fresh flash textures for rebuilt surface meshes.
 
 Phase 7: Stabilize the visual MVP. Run focused tests, verify desktop/mobile/splitscreen framing, tune performance, update docs/screenshots, and make sure the plugin works without MIDI hardware.
+
+Phase 7 output:
+
+- Real feedpak projection no longer caches only by `drumTab` object identity.
+  The host streams real drum hits by appending `drum_hits` chunks into the same
+  `bundle.drumTab.hits` array, so the renderer now invalidates projection when
+  the hit count changes. This prevents the 3D lanes from being based on an early
+  partial hit set.
+- A present-but-empty `bundle.drumTab.hits` array is now treated as a real drum
+  chart, matching `drum_highway_3d`. This prevents the multipad renderer from
+  showing the demo pattern while real feedpak drum-hit chunks are still loading.
+- The multipad renderer no longer carries a hardcoded demo note stream. With no
+  real `bundle.drumTab`, it renders the pad grid without invented notes.
+- Projection diagnostics now report source type, raw/normalized/projected hit
+  counts, unknown pieces, unrouted pieces, and active profile ids through the
+  renderer probe and a one-time console warning when chart data projects to zero
+  notes.
+- Multipad's canonical vocabulary now matches the current drum library's
+  additional `stack` and `bell` pieces. Built-in profiles route `stack` with the
+  crash family and `bell` with the ride family, and custom fallback routing can
+  resolve those pieces explicitly.
+- Focused JS tests now assert exact default piece-to-surface routing for every
+  known pad piece, projection coverage for `stack` and `bell`, and real-chart
+  detection for empty drum-tab hit streams.
+- `screen.js` remains one delivered script for plugin-loader compatibility, but
+  it is now organized into explicit internal sections: runtime constants, drum
+  vocabulary, profile/settings validation, chart source selection, projection,
+  renderer lifecycle, and public/test API registration. The renderer consumes a
+  named `chartSourceFromBundle()` helper so `bundle.drumTab` source decisions
+  are testable without WebGL.
 
 Phase 8, post-MVP: Add MIDI/scoring only if needed. If this plugin takes ownership of input or scoring later, connect to the core `midi-input` domain, mirror `drum_highway_3d` MIDI-to-piece behavior, implement hit/miss matching by routed pad/pedal source or render surface rather than raw MIDI note or original piece id, then consider `note-detection`, stats, progression, synth feedback, and scoring diagnostics.
 
