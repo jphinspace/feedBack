@@ -5568,9 +5568,24 @@ function _playbackApi() {
         : null;
 }
 
+// Bridge hits are a "this legacy surface is still in use" signal, not a call
+// counter — but recordBridgeHit is not cheap (compat-shim bookkeeping, a
+// playback:bridge-hit event, and a diagnostics snapshot rebuild per call).
+// Plugins legitimately poll read surfaces like window.feedBack.getLoop() from
+// HUD ticks (note_detect polled at ~30 Hz), which turned every tick into a
+// snapshot serialization on the main thread and saturated the inspector's
+// hitCount. Throttle per surface: the first call records immediately, repeats
+// within the window are dropped.
+const _bridgeRecordLast = new Map();
+const _BRIDGE_RECORD_MIN_MS = 5000;
 function _recordPlaybackBridge(bridgeId, legacySurface, reason) {
     const playback = _playbackApi();
     if (!playback || typeof playback.recordBridgeHit !== 'function') return;
+    const key = `${bridgeId}|${legacySurface}`;
+    const now = Date.now();
+    const last = _bridgeRecordLast.get(key);
+    if (last != null && now - last < _BRIDGE_RECORD_MIN_MS) return;
+    _bridgeRecordLast.set(key, now);
     playback.recordBridgeHit({
         bridgeId,
         legacySurface,
@@ -7944,6 +7959,10 @@ function setLoopEnd() {
     if (loopB <= loopA) { loopB = null; return; }
     document.getElementById('btn-loop-b').className = 'px-3 py-1.5 bg-green-900/50 rounded-lg text-xs text-green-300 transition';
     updateLoopUI();
+    // Manual A/B arming is a loop mutation like setLoop()'s — emit the same
+    // transport event so event-driven consumers (note_detect drill sync) see
+    // button-armed loops without having to poll getLoop().
+    window.feedBack?.playback?.transportEvent?.('loop-set', { requesterId: 'core.loop', loopA, loopB, loop: { startTime: loopA, endTime: loopB, enabled: true, state: 'active' } });
 }
 
 function clearLoop(options) {
