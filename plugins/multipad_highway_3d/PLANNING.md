@@ -255,6 +255,15 @@ Phase 7 output:
   renderer lifecycle, and public/test API registration. The renderer consumes a
   named `chartSourceFromBundle()` helper so `bundle.drumTab` source decisions
   are testable without WebGL.
+- Visual framing now leans closer to the guitar/bass `highway_3d` feel: a wider
+  camera lens, closer highway framing, deeper note travel, a lifted far lane
+  endpoint, a shared pitched highway transform, and an off-center shoulder
+  camera make same-lane incoming gems travel down the grid more clearly without
+  changing pad surfaces or note gem materials.
+- Incoming note gems and rectangular target surfaces now share rounded-corner
+  rectangle geometry, while circular trigger targets remain circular.
+- Each incoming note gem has a colored additive edge glow, implemented as a
+  pooled halo mesh behind the rounded rectangle body.
 
 Phase 8, post-MVP: Add MIDI/scoring only if needed. If this plugin takes ownership of input or scoring later, connect to the core `midi-input` domain, mirror `drum_highway_3d` MIDI-to-piece behavior, implement hit/miss matching by routed pad/pedal source or render surface rather than raw MIDI note or original piece id, then consider `note-detection`, stats, progression, synth feedback, and scoring diagnostics.
 

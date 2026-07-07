@@ -350,9 +350,21 @@
     const EXTERNAL_TRIGGER_PAD_DIAMETER = PAD_H;
     const EXTERNAL_TRIGGER_PAD_EDGE_WIDTH = 0.14;
     const GRID_CENTER_Y = 1.22;
-    const TUNNEL_DEPTH = 18;
-    const TUNNEL_BACK_SCALE = 0.55;
-    const NOTE_SPEED = 6.2;
+    const TUNNEL_DEPTH = 22;
+    const TUNNEL_BACK_SCALE = 0.34;
+    const TUNNEL_BACK_LIFT = 0.86;
+    const HIGHWAY_PITCH = 0.44;
+    const HIGHWAY_Y_OFFSET = -0.10;
+    const HIGHWAY_Z_OFFSET = -0.35;
+    const CAMERA_SHOULDER_X = -2.25;
+    const CAMERA_LOOK_X = 0.28;
+    const NOTE_SPEED = 7.25;
+    const NOTE_GEM_DEPTH = 0.1;
+    const NOTE_GEM_CORNER_RADIUS = 0.18;
+    const NOTE_GEM_CURVE_SEGMENTS = 8;
+    const NOTE_GEM_GLOW_WIDTH = 0.12;
+    const NOTE_GEM_BODY_Z_OFFSET = 0.08;
+    const NOTE_GEM_GLOW_Z_OFFSET = -0.12;
     const NOTE_AHEAD_SEC = 3.0;
     const NOTE_BEHIND_SEC = 0.28;
     const HIT_PULSE_SEC = 0.16;
@@ -1568,6 +1580,7 @@
         let scene = null;
         let camera = null;
         let renderer = null;
+        let highwayGroup = null;
         let surfaceGroup = null;
         let notesGroup = null;
         let labelGroup = null;
@@ -1648,39 +1661,139 @@
         }
 
         /**
-         * Hide pooled note meshes before rendering the next frame.
+         * Remove an object from whichever parent currently owns it.
+         *
+         * @param {object|null} obj - Three.js object.
+         * @returns {void}
+         */
+        function removeFromParent(obj) {
+            if (obj && obj.parent && typeof obj.parent.remove === 'function') {
+                obj.parent.remove(obj);
+            }
+        }
+
+        /**
+         * Apply the shared highway transform used by surfaces, lane guides, and notes.
+         *
+         * @returns {void}
+         */
+        function applyHighwayTransform() {
+            if (!highwayGroup) return;
+            highwayGroup.position.set(0, HIGHWAY_Y_OFFSET, HIGHWAY_Z_OFFSET);
+            highwayGroup.rotation.set(HIGHWAY_PITCH, 0, 0);
+        }
+
+        /**
+         * Hide pooled note groups before rendering the next frame.
          *
          * Stable geometry and materials are shared and disposed during teardown,
-         * so note meshes can be dropped without disposing those resources here.
+         * so note groups can be dropped without disposing those resources here.
          *
          * @returns {void}
          */
         function clearTransientNotes() {
             if (!notesGroup) return;
-            for (const mesh of noteMeshPool) {
-                mesh.visible = false;
+            for (const entry of noteMeshPool) {
+                entry.group.visible = false;
             }
             visibleNoteCount = 0;
         }
 
         /**
-         * Return a reusable note mesh for this frame.
+         * Return a reusable note group for this frame.
          *
-         * @param {object} material - Material for the current note variant.
-         * @returns {object} Three.js mesh.
+         * @param {object} material - Body material for the current note variant.
+         * @param {object} glowMaterial - Glow material for the current note variant.
+         * @returns {object} Note pool entry.
          */
-        function acquireNoteMesh(material) {
-            let mesh = noteMeshPool[visibleNoteCount];
-            if (!mesh) {
-                mesh = new T.Mesh(noteGeometry, material);
-                noteMeshPool.push(mesh);
-                notesGroup.add(mesh);
-            } else if (mesh.material !== material) {
-                mesh.material = material;
+        function acquireNoteMesh(material, glowMaterial) {
+            let entry = noteMeshPool[visibleNoteCount];
+            if (!entry) {
+                const group = new T.Group();
+                const glow = new T.Mesh(noteGeometry, glowMaterial);
+                const body = new T.Mesh(noteGeometry, material);
+                glow.position.z = NOTE_GEM_GLOW_Z_OFFSET;
+                body.position.z = NOTE_GEM_BODY_Z_OFFSET;
+                glow.renderOrder = 9;
+                body.renderOrder = 10;
+                group.add(glow, body);
+                entry = { group, glow, body };
+                noteMeshPool.push(entry);
+                notesGroup.add(group);
+            } else {
+                if (entry.body.material !== material) entry.body.material = material;
+                if (entry.glow.material !== glowMaterial) entry.glow.material = glowMaterial;
             }
-            mesh.visible = true;
+            entry.group.visible = true;
             visibleNoteCount++;
-            return mesh;
+            return entry;
+        }
+
+        /**
+         * Create a rounded rectangle shape centered on the local origin.
+         *
+         * @param {number} w - Width.
+         * @param {number} h - Height.
+         * @param {number} radius - Corner radius.
+         * @returns {object} Three.js Shape.
+         */
+        function makeRoundedRectShape(w, h, radius) {
+            const hw = w / 2;
+            const hh = h / 2;
+            const r = Math.max(0, Math.min(radius, hw, hh));
+            const shape = new T.Shape();
+            shape.moveTo(-hw + r, -hh);
+            shape.lineTo(hw - r, -hh);
+            shape.quadraticCurveTo(hw, -hh, hw, -hh + r);
+            shape.lineTo(hw, hh - r);
+            shape.quadraticCurveTo(hw, hh, hw - r, hh);
+            shape.lineTo(-hw + r, hh);
+            shape.quadraticCurveTo(-hw, hh, -hw, hh - r);
+            shape.lineTo(-hw, -hh + r);
+            shape.quadraticCurveTo(-hw, -hh, -hw + r, -hh);
+            return shape;
+        }
+
+        /**
+         * Create the shared rounded-rectangle geometry for incoming note gems.
+         *
+         * @returns {object} Three.js geometry centered on the local origin.
+         */
+        function makeRoundedNoteGeometry() {
+            const shape = makeRoundedRectShape(1, 1, NOTE_GEM_CORNER_RADIUS);
+            const geo = new T.ExtrudeGeometry(shape, {
+                depth: NOTE_GEM_DEPTH,
+                bevelEnabled: false,
+                curveSegments: NOTE_GEM_CURVE_SEGMENTS,
+            });
+            geo.translate(0, 0, -NOTE_GEM_DEPTH / 2);
+            return geo;
+        }
+
+        /**
+         * Create a flat rounded rectangle surface geometry.
+         *
+         * @param {number} w - Width.
+         * @param {number} h - Height.
+         * @returns {object} Three.js geometry.
+         */
+        function makeRoundedSurfaceGeometry(w, h) {
+            const r = Math.min(w, h) * NOTE_GEM_CORNER_RADIUS;
+            return new T.ShapeGeometry(makeRoundedRectShape(w, h, r), NOTE_GEM_CURVE_SEGMENTS);
+        }
+
+        /**
+         * Create a rounded rectangle outline geometry.
+         *
+         * @param {number} w - Width.
+         * @param {number} h - Height.
+         * @returns {object} Three.js geometry.
+         */
+        function makeRoundedSurfaceEdgeGeometry(w, h) {
+            const r = Math.min(w, h) * NOTE_GEM_CORNER_RADIUS;
+            const points = makeRoundedRectShape(w, h, r).getPoints(NOTE_GEM_CURVE_SEGMENTS);
+            if (points.length) points.push(points[0].clone());
+            return new T.BufferGeometry().setFromPoints(points);
         }
 
         /**
@@ -1761,23 +1874,31 @@
          * Return a cached material for note meshes.
          *
          * @param {number} colorHex - Three.js hex color.
-         * @param {string} variant - Accepted by the material API; ignored for multipad visuals.
+         * @param {string} variant - `normal` for the gem body, `glow` for the edge halo.
          * @returns {object} Three.js material.
          */
         function getNoteMaterial(colorHex, variant) {
-            void variant;
-            const key = String(colorHex) + ':normal';
+            const type = variant === 'glow' ? 'glow' : 'normal';
+            const key = String(colorHex) + ':' + type;
             if (noteMaterials.has(key)) return noteMaterials.get(key);
             const glow = 0.25 + (activeSettings.glowStrength || 0) * 0.75;
-            const material = new T.MeshStandardMaterial({
-                color: colorHex,
-                emissive: colorHex,
-                emissiveIntensity: 0.55 * glow,
-                metalness: 0.12,
-                roughness: 0.36,
-                transparent: true,
-                opacity: 0.92,
-            });
+            const material = type === 'glow'
+                ? new T.MeshBasicMaterial({
+                    color: colorHex,
+                    transparent: true,
+                    opacity: 0.20 + glow * 0.26,
+                    blending: T.AdditiveBlending,
+                    depthWrite: false,
+                })
+                : new T.MeshStandardMaterial({
+                    color: colorHex,
+                    emissive: colorHex,
+                    emissiveIntensity: 0.55 * glow,
+                    metalness: 0.12,
+                    roughness: 0.36,
+                    transparent: true,
+                    opacity: 0.92,
+                });
             noteMaterials.set(key, material);
             return material;
         }
@@ -1829,8 +1950,8 @@
         function applyCameraSettings() {
             if (!camera) return;
             const a = activeSettings.cameraAngle;
-            camera.position.set(0, 2.4 + a * 2.0, 7.8 - a * 2.3);
-            camera.lookAt(0, GRID_CENTER_Y + a * 0.2, -7.2 + a * 2.8);
+            camera.position.set(CAMERA_SHOULDER_X, 2.85 + a * 1.1, 5.35 - a * 0.75);
+            camera.lookAt(CAMERA_LOOK_X, GRID_CENTER_Y - 0.52 + a * 0.22, -11.8 + a * 2.2);
             baseCameraY = camera.position.y;
         }
 
@@ -1903,7 +2024,7 @@
                 [x + w / 2, y + h / 2, 0.015],
                 [x - w / 2, y + h / 2, 0.015],
             ];
-            const backY = GRID_CENTER_Y + (y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
+            const backY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
             const back = [
                 [(x - w / 2) * TUNNEL_BACK_SCALE, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
                 [(x + w / 2) * TUNNEL_BACK_SCALE, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
@@ -1939,7 +2060,7 @@
          * @returns {object} Surface descriptor used by note placement.
          */
         function addPlaneSurface(key, x, y, w, h, colorHex, opacity, group) {
-            const geo = new T.PlaneGeometry(w, h);
+            const geo = makeRoundedSurfaceGeometry(w, h);
             const theme = themeColors();
             const mat = new T.MeshStandardMaterial({
                 color: theme.pad,
@@ -1957,13 +2078,13 @@
             mesh.add(flashMesh);
             group.add(mesh);
 
-            const edgeGeo = new T.EdgesGeometry(geo);
+            const edgeGeo = makeRoundedSurfaceEdgeGeometry(w, h);
             const edgeMat = new T.LineBasicMaterial({
                 color: theme.edge,
                 transparent: true,
                 opacity: 0.74,
             });
-            const edges = new T.LineSegments(edgeGeo, edgeMat);
+            const edges = new T.Line(edgeGeo, edgeMat);
             edges.position.copy(mesh.position);
             group.add(edges);
 
@@ -2088,17 +2209,17 @@
         function buildSurfaceGrid(profile, pedalProfile, triggerProfile) {
             if (surfaceGroup) {
                 disposeObjectTree(surfaceGroup);
-                scene.remove(surfaceGroup);
+                removeFromParent(surfaceGroup);
             }
             if (labelGroup) {
                 disposeObjectTree(labelGroup);
-                scene.remove(labelGroup);
+                removeFromParent(labelGroup);
             }
             surfaceGroup = new T.Group();
             labelGroup = new T.Group();
             labelGroup.visible = !!activeSettings.showLabels;
-            scene.add(surfaceGroup);
-            scene.add(labelGroup);
+            (highwayGroup || scene).add(surfaceGroup);
+            (highwayGroup || scene).add(labelGroup);
             surfaces = Object.create(null);
             const layout = buildSurfaceLayout(profile, pedalProfile, triggerProfile);
             activeSurfaceLayoutKey = layout.layoutKey;
@@ -2271,7 +2392,7 @@
             const theme = themeColors();
             scene.background = new T.Color(theme.clear);
             scene.fog = new T.Fog(theme.fog, 12, 34);
-            camera = new T.PerspectiveCamera(44, 1, 0.1, 80);
+            camera = new T.PerspectiveCamera(60, 1, 0.1, 90);
             applyCameraSettings();
 
             ambientLight = new T.AmbientLight(0x7c8ca8, 0.40);
@@ -2333,9 +2454,13 @@
             sparkPoints.visible = false;
             scene.add(sparkPoints);
 
+            highwayGroup = new T.Group();
+            applyHighwayTransform();
+            scene.add(highwayGroup);
+
             notesGroup = new T.Group();
-            scene.add(notesGroup);
-            noteGeometry = new T.BoxGeometry(1, 1, 0.1);
+            highwayGroup.add(notesGroup);
+            noteGeometry = makeRoundedNoteGeometry();
             const profile = readMultipadProfile();
             buildSurfaceGrid(profile.padProfile, profile.pedalProfile, profile.triggerProfile);
         }
@@ -2491,16 +2616,18 @@
             const z = -dt * NOTE_SPEED;
             const progress = Math.max(0, Math.min(1, (z + TUNNEL_DEPTH) / TUNNEL_DEPTH));
             const backX = surface.x * TUNNEL_BACK_SCALE;
-            const backY = GRID_CENTER_Y + (surface.y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
+            const backY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (surface.y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
             const x = backX + (surface.x - backX) * progress;
             const y = backY + (surface.y - backY) * progress;
             const color = eventColorForEvent(event);
-            const mesh = acquireNoteMesh(getNoteMaterial(color, 'normal'));
+            const note = acquireNoteMesh(getNoteMaterial(color, 'normal'), getNoteMaterial(color, 'glow'));
             const size = 0.55 + progress * 0.45;
             const w = surface.w * (event.type === 'pad' ? 0.72 : 0.92) * size;
             const h = surface.h * (event.type === 'pad' ? 0.52 : 0.86) * size;
-            mesh.position.set(x, y, z);
-            mesh.scale.set(w, Math.max(0.045, h), 0.11);
+            const bodyH = Math.max(0.045, h);
+            note.group.position.set(x, y, z);
+            note.body.scale.set(w, bodyH, 0.11);
+            note.glow.scale.set(w + NOTE_GEM_GLOW_WIDTH, bodyH + NOTE_GEM_GLOW_WIDTH, 0.11);
         }
 
         /**
@@ -2657,6 +2784,7 @@
             scene = null;
             camera = null;
             renderer = null;
+            highwayGroup = null;
             surfaceGroup = null;
             notesGroup = null;
             labelGroup = null;
