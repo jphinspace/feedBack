@@ -131,19 +131,21 @@
 
     <script>
     (function () {
-        const FRIENDLY = {
-            kick: 'Kick',
-            snare: 'Snare', snare_xstick: 'Snare (cross-stick)',
-            hh_closed: 'Hi-hat (closed)', hh_open: 'Hi-hat (open)', hh_pedal: 'Hi-hat (pedal)',
-            tom_hi: 'Tom - high', tom_mid: 'Tom - mid', tom_low: 'Tom - low', tom_floor: 'Floor tom',
-            stack: 'Stack',
-            crash_l: 'Crash (left)', crash_r: 'Crash (right)', splash: 'Splash', china: 'China',
-            ride: 'Ride', ride_bell: 'Ride bell', bell: 'Bell',
-        };
+        // Fetched from the shared PIECE_FRIENDLY_LABELS in 01-constants.js
+        // (via multipadH3dGetPieceFriendlyLabels) during boot() instead of
+        // keeping its own copy here, so the settings panel and the 3D
+        // highway's on-target labels can never drift apart on what a piece
+        // is called.
+        let FRIENDLY = {};
         const TRIGGER_SIDES = [
-            { id: 'trigger-1', name: 'Trigger 1', center: 'external-left-center', edge: 'external-left-edge' },
-            { id: 'trigger-2', name: 'Trigger 2', center: 'external-right-center', edge: 'external-right-edge' },
+            { id: 'trigger-1', name: 'Trigger 1', center: 'external-left-center', edge: 'external-left-edge', rim: 'external-left-rim' },
+            { id: 'trigger-2', name: 'Trigger 2', center: 'external-right-center', edge: 'external-right-edge', rim: 'external-right-rim' },
         ];
+        // Zone ordering shared by rebuildTriggers/renderTriggers/zoneRow -
+        // 'single' only uses the first entry, 'dual' the first two, 'triple'
+        // all three.
+        const TRIGGER_ZONES = ['center', 'edge', 'rim'];
+        const TRIGGER_ZONE_COUNT = { single: 1, dual: 2, triple: 3 };
 
         // Matches SCENE_THEMES-independent core fallback color
         // (SCENE_COLORS.inactiveSurface in 01-constants.js) shown for any
@@ -151,8 +153,9 @@
         const UNASSIGNED_COLOR = '#2d3748';
 
         let profile = null;
-        let padPieces = [];
-        let pedalPieces = [];
+        // Any piece may be assigned to a pad, a pedal, or a trigger - there
+        // is no longer a separate restricted piece list per target type.
+        let allPieces = [];
         let pieceColors = {};
 
         function friendly(piece) { return FRIENDLY[piece] || piece; }
@@ -199,44 +202,35 @@
         function normalizePadPieces(pad) {
             const seen = new Set();
             pad.pieces = (pad.pieces || []).filter(piece => {
-                if (!padPieces.includes(piece) || seen.has(piece)) return false;
+                if (!allPieces.includes(piece) || seen.has(piece)) return false;
                 seen.add(piece);
                 return true;
             });
             return pad.pieces;
         }
-        function assignedPadPieceSet(exceptPadId) {
-            const assigned = new Set();
-            for (const pad of profile.padProfile.pads) {
-                if (pad.id === exceptPadId) continue;
-                for (const piece of pad.pieces || []) {
-                    if (padPieces.includes(piece)) assigned.add(piece);
-                }
-            }
-            return assigned;
+        /**
+         * Pieces already claimed by a pad, pedal, or trigger elsewhere in
+         * the profile, so a piece can't even be picked twice in the
+         * settings UI in the first place instead of only being silently
+         * dropped from one side after save. Thin wrapper around the shared
+         * `multipadH3dGetAssignedPieces` global (backed by
+         * `collectAssignedPieces` in 02-profiles.js) - the same "who else
+         * has this piece" logic validateMultipadProfile's write-time dedup
+         * uses, so this file doesn't keep its own independent copy of that
+         * walk. Each `skip*` predicate excludes the one entry currently
+         * being edited, so its own current piece doesn't count against itself.
+         *
+         * @param {object} [options]
+         * @param {(pad: object) => boolean} [options.skipPad]
+         * @param {(pedal: object) => boolean} [options.skipPedal]
+         * @param {(trigger: object) => boolean} [options.skipTrigger]
+         * @returns {Set<string>}
+         */
+        function assignedElsewhere(options) {
+            return window.multipadH3dGetAssignedPieces(profile, options || {});
         }
         function allChartPieces() {
-            const out = [];
-            const seen = new Set();
-            for (const piece of padPieces.concat(pedalPieces)) {
-                if (!piece || seen.has(piece)) continue;
-                seen.add(piece);
-                out.push(piece);
-            }
-            return out;
-        }
-        function directlyAssignedChartPieceSet() {
-            const valid = new Set(allChartPieces());
-            const assigned = new Set();
-            const add = (pieces) => {
-                for (const piece of pieces || []) {
-                    if (valid.has(piece)) assigned.add(piece);
-                }
-            };
-            for (const pad of profile.padProfile.pads || []) add(pad.pieces);
-            for (const pedal of profile.pedalProfile.pedals || []) add(pedal.pieces);
-            for (const trigger of profile.triggerProfile.triggers || []) add(trigger.pieces);
-            return assigned;
+            return allPieces.slice();
         }
         function getPadAt(row, col) {
             return profile.padProfile.pads.find(pad => pad.row === row && pad.col === col) || null;
@@ -335,7 +329,7 @@
                         continue;
                     }
                     const pieces = normalizePadPieces(pad);
-                    const assignedElsewhere = assignedPadPieceSet(pad.id);
+                    const takenElsewhere = assignedElsewhere({ skipPad: p => p.id === pad.id });
                     cell.className = 'min-w-0 min-h-[4.75rem] rounded border p-2 ' + (pieces.length
                         ? 'border-gray-700 bg-dark-700/60'
                         : 'border-gray-800 bg-dark-700/30 opacity-75');
@@ -369,8 +363,8 @@
                     placeholder.textContent = pieces.length ? 'Add piece' : 'Assign piece';
                     addSelect.appendChild(placeholder);
                     let addable = 0;
-                    for (const piece of padPieces) {
-                        if (pieces.includes(piece) || assignedElsewhere.has(piece)) continue;
+                    for (const piece of allPieces) {
+                        if (pieces.includes(piece) || takenElsewhere.has(piece)) continue;
                         const opt = document.createElement('option');
                         opt.value = piece;
                         opt.textContent = friendly(piece);
@@ -430,7 +424,7 @@
             const el = document.getElementById('multipad-h3d-unmapped-pieces');
             const countEl = document.getElementById('multipad-h3d-unmapped-count');
             el.innerHTML = '';
-            const assigned = directlyAssignedChartPieceSet();
+            const assigned = assignedElsewhere();
             const unmapped = allChartPieces().filter(piece => !assigned.has(piece));
             if (countEl) countEl.textContent = `(${unmapped.length})`;
             if (!unmapped.length) {
@@ -455,10 +449,25 @@
             const next = [];
             for (let i = 0; i < count; i++) {
                 const existing = current[i] || {};
-                const piece = existing.pieces && existing.pieces[0] || (i === 0 ? 'hh_pedal' : 'kick');
+                let piece = existing.pieces && existing.pieces[0] || '';
+                if (!piece && !existing.id) {
+                    // Brand-new pedal slot: default to hh_pedal/kick, but
+                    // only when that piece isn't already claimed by a pad,
+                    // another pedal, or a trigger - any piece may live
+                    // anywhere now, so don't force a default that would
+                    // just be silently dropped as a duplicate on save.
+                    const guess = i === 0 ? 'hh_pedal' : 'kick';
+                    if (!assignedElsewhere({ skipPedal: p => p === existing }).has(guess)) piece = guess;
+                }
                 next.push({
                     id: existing.id || 'pedal-' + (i + 1),
-                    surface: piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom',
+                    // Surface is keyed by slot position ("Pedal 1"/"Pedal 2"),
+                    // not by which piece is assigned - any piece can now go
+                    // on either pedal, so tying the surface to piece identity
+                    // (e.g. "hh_pedal always top") would let two pedals with
+                    // different non-hh_pedal pieces collide onto the same
+                    // surface.
+                    surface: i === 0 ? 'outline-top' : 'outline-bottom',
                     label: piece ? ((window.multipadH3dGetPieceLabels && window.multipadH3dGetPieceLabels()[piece]) || piece) : '',
                     pieces: piece ? [piece] : [],
                     color: existing.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR),
@@ -478,21 +487,26 @@
             el.innerHTML = '';
             (profile.pedalProfile.pedals || []).forEach((pedal, i) => {
                 const piece = pedal.pieces && pedal.pieces[0] || '';
+                const taken = assignedElsewhere({ skipPedal: p => p === pedal });
+                const available = allPieces.filter(p => p === piece || !taken.has(p));
                 const row = document.createElement('div');
                 row.className = 'grid grid-cols-[4rem_1fr_2.25rem] items-center gap-2 px-2 py-1 rounded ' +
                     (piece ? 'bg-dark-700/60' : 'bg-dark-700/30 opacity-75');
                 row.innerHTML =
                     `<span class="text-[10px] text-gray-500">Pedal ${i + 1}</span>` +
-                    `<select data-i="${i}" aria-label="Pedal ${i + 1} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(pedalPieces, piece, true)}</select>` +
+                    `<select data-i="${i}" aria-label="Pedal ${i + 1} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(available, piece, true)}</select>` +
                     `<input type="color" data-color="${i}" aria-label="Pedal ${i + 1} color" value="${pedal.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR)}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
                 el.appendChild(row);
             });
             el.querySelectorAll('select').forEach(sel => {
                 sel.onchange = () => {
-                    const pedal = profile.pedalProfile.pedals[parseInt(sel.dataset.i, 10)];
+                    const i = parseInt(sel.dataset.i, 10);
+                    const pedal = profile.pedalProfile.pedals[i];
                     const piece = sel.value;
                     pedal.pieces = piece ? [piece] : [];
-                    pedal.surface = piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom';
+                    // Keep the slot's existing surface - changing the piece
+                    // must never move a pedal onto the other pedal's surface.
+                    pedal.surface = i === 0 ? 'outline-top' : 'outline-bottom';
                     pedal.label = piece ? friendly(piece) : '';
                     pedal.color = piece ? pieceColor(piece) : UNASSIGNED_COLOR;
                     saveProfile();
@@ -516,31 +530,30 @@
                 slot: slotMap.get(side.id) || null,
                 center: bySurface.get(side.center) || null,
                 edge: bySurface.get(side.edge) || null,
+                rim: bySurface.get(side.rim) || null,
             }));
+        }
+        function modeForItem(item) {
+            if ((item.slot && item.slot.zones >= 3) || item.rim) return 'triple';
+            if ((item.slot && item.slot.zones >= 2) || item.edge) return 'dual';
+            return 'single';
         }
         function rebuildTriggers(count, modes) {
             const current = triggerMeta();
             const next = [];
             const slots = [];
             for (let i = 0; i < count; i++) {
-                const mode = modes[i] || ((current[i].slot && current[i].slot.zones >= 2) || current[i].edge ? 'dual' : 'single');
-                slots.push({ id: TRIGGER_SIDES[i].id, zones: mode === 'dual' ? 2 : 1 });
-                const center = current[i].center || {};
-                next.push({
-                    id: TRIGGER_SIDES[i].id + '-center',
-                    surface: TRIGGER_SIDES[i].center,
-                    label: center.label || '',
-                    pieces: center.pieces || [],
-                    color: center.color || firstPieceColor(center.pieces),
-                });
-                if (mode === 'dual') {
-                    const edge = current[i].edge || {};
+                const mode = modes[i] || modeForItem(current[i]);
+                const zoneCount = TRIGGER_ZONE_COUNT[mode] || 1;
+                slots.push({ id: TRIGGER_SIDES[i].id, zones: zoneCount });
+                for (const zone of TRIGGER_ZONES.slice(0, zoneCount)) {
+                    const item = current[i][zone] || {};
                     next.push({
-                        id: TRIGGER_SIDES[i].id + '-edge',
-                        surface: TRIGGER_SIDES[i].edge,
-                        label: edge.label || '',
-                        pieces: edge.pieces || [],
-                        color: edge.color || firstPieceColor(edge.pieces),
+                        id: TRIGGER_SIDES[i].id + '-' + zone,
+                        surface: TRIGGER_SIDES[i][zone],
+                        label: item.label || '',
+                        pieces: item.pieces || [],
+                        color: item.color || firstPieceColor(item.pieces),
                     });
                 }
             }
@@ -549,18 +562,18 @@
         }
         function renderTriggers() {
             const meta = triggerMeta();
-            const count = meta.filter(item => item.slot || item.center || item.edge).length;
+            const count = meta.filter(item => item.slot || item.center || item.edge || item.rim).length;
             const countSel = document.getElementById('multipad-h3d-trigger-count');
             countSel.value = String(count);
             countSel.onchange = () => {
-                rebuildTriggers(clampInt(countSel.value, 0, 2, 0), meta.map(item => item.edge ? 'dual' : 'single'));
+                rebuildTriggers(clampInt(countSel.value, 0, 2, 0), meta.map(modeForItem));
                 saveProfile();
                 render();
             };
             const el = document.getElementById('multipad-h3d-triggers');
             el.innerHTML = '';
             triggerMeta().slice(0, count).forEach((item, i) => {
-                const mode = (item.slot && item.slot.zones >= 2) || item.edge ? 'dual' : 'single';
+                const mode = modeForItem(item);
                 const wrap = document.createElement('div');
                 wrap.className = 'rounded bg-dark-700/40 px-2 py-2';
                 wrap.innerHTML =
@@ -569,14 +582,16 @@
                     `<select data-mode="${i}" aria-label="${item.side.name} zone count" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">` +
                     `<option value="single"${mode === 'single' ? ' selected' : ''}>1-zone</option>` +
                     `<option value="dual"${mode === 'dual' ? ' selected' : ''}>2-zone</option>` +
+                    `<option value="triple"${mode === 'triple' ? ' selected' : ''}>3-zone</option>` +
                     `</select></div>` +
                     zoneRow(item.center, i, 'center') +
-                    (mode === 'dual' ? zoneRow(item.edge, i, 'edge') : '');
+                    (mode === 'dual' || mode === 'triple' ? zoneRow(item.edge, i, 'edge') : '') +
+                    (mode === 'triple' ? zoneRow(item.rim, i, 'rim') : '');
                 el.appendChild(wrap);
             });
             el.querySelectorAll('select[data-mode]').forEach(sel => {
                 sel.onchange = () => {
-                    const modes = triggerMeta().map((item, idx) => idx === parseInt(sel.dataset.mode, 10) ? sel.value : ((item.slot && item.slot.zones >= 2) || item.edge ? 'dual' : 'single'));
+                    const modes = triggerMeta().map((item, idx) => idx === parseInt(sel.dataset.mode, 10) ? sel.value : modeForItem(item));
                     rebuildTriggers(count, modes);
                     saveProfile();
                     render();
@@ -605,11 +620,13 @@
         function zoneRow(trigger, index, zone) {
             const piece = trigger && trigger.pieces && trigger.pieces[0] || '';
             const surface = TRIGGER_SIDES[index][zone];
-            const label = zone === 'center' ? 'Center' : 'Edge';
+            const label = zone === 'center' ? 'Center' : (zone === 'edge' ? 'Edge' : 'Rim');
             const sideName = TRIGGER_SIDES[index].name;
+            const taken = assignedElsewhere({ skipTrigger: t => t.surface === surface });
+            const available = allPieces.filter(p => p === piece || !taken.has(p));
             return `<div class="grid grid-cols-[3.5rem_1fr_2.25rem] items-center gap-2 py-1 ${piece ? '' : 'opacity-75'}">` +
                 `<span class="text-[10px] text-gray-500">${label}</span>` +
-                `<select data-zone="${surface}" aria-label="${sideName} ${label} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
+                `<select data-zone="${surface}" aria-label="${sideName} ${label} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(available, piece, true)}</select>` +
                 `<input type="color" data-color="${surface}" aria-label="${sideName} ${label} color" value="${trigger && trigger.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR)}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">` +
                 `</div>`;
         }
@@ -709,8 +726,8 @@
                 return;
             }
             profile = window.multipadH3dGetProfile();
-            padPieces = window.multipadH3dGetPadPieces ? window.multipadH3dGetPadPieces() : [];
-            pedalPieces = window.multipadH3dGetPedalPieces ? window.multipadH3dGetPedalPieces() : ['kick', 'hh_pedal'];
+            allPieces = window.multipadH3dGetAllPieces ? window.multipadH3dGetAllPieces() : [];
+            FRIENDLY = window.multipadH3dGetPieceFriendlyLabels ? window.multipadH3dGetPieceFriendlyLabels() : {};
             pieceColors = window.multipadH3dGetPieceColors ? window.multipadH3dGetPieceColors() : {};
             document.getElementById('multipad-h3d-profile-name').onchange = () => saveProfile('profile saved');
             document.getElementById('multipad-h3d-custom-rows').onchange = applyCustomDimensions;

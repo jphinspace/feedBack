@@ -2,9 +2,11 @@
 
 Multipad Highway 3D is a multipad-layout visualization for drum charts.
 It displays ordinary `drum_highway_3d` piece ids through a front-facing
-multipad layout instead of a single horizontal lane row. Hi-hat pedal and kick
-hits are reserved for a separate pedal profile and render as top and bottom
-pedal surfaces.
+multipad layout instead of a single horizontal lane row. Any chart piece,
+including hi-hat pedal and kick, may be assigned to a pad, a pedal surface, or
+an external trigger; the default profile maps hi-hat pedal and kick to the top
+and bottom pedal surfaces, but that's just a starting point, not a
+restriction.
 
 This directory currently contains the Phase 7 MVP renderer from
 `PLANNING.md`:
@@ -50,9 +52,15 @@ plugin's permanent shape.
 
 The settings panel edits direct assignments only:
 
-- pads can contain one or more non-pedal chart pieces;
-- pedals can map `kick` and `hh_pedal`;
-- external triggers can map non-pedal pieces to off-grid trigger surfaces.
+- pads can contain one or more chart pieces, of any kind;
+- pedals can map any single chart piece (not just `kick`/`hh_pedal`);
+- external triggers can map chart pieces to off-grid trigger surfaces.
+
+Any piece may be assigned to a pad, a pedal, or a trigger, but only one of
+those at a time - a piece requested in more than one place across the
+combined profile is kept on the first (pad, then pedal, then trigger) and
+dropped from the rest, since a piece live on two targets would only ever
+actually fire from one of them.
 
 `Unmapped chart pieces` is a read-only status block. It lists pieces that are
 not directly assigned to any pad, pedal, or trigger and updates when mappings

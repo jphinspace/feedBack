@@ -29,6 +29,7 @@ cd "$(dirname "$0")"
 //   src/03-projection.js   chart source and projection helpers
 //   src/04-renderer.js     Three.js renderer lifecycle
 //   src/05-api.js          test and settings-panel APIs
+//   src/06-player-ui.js    player-controls toggle button
 
 (function () {
     'use strict';
@@ -39,5 +40,6 @@ HEADER
     cat src/03-projection.js
     cat src/04-renderer.js
     cat src/05-api.js
+    cat src/06-player-ui.js
     printf '})();\n'
 } > screen.js

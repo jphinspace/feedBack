@@ -10,6 +10,7 @@
 //   src/03-projection.js   chart source and projection helpers
 //   src/04-renderer.js     Three.js renderer lifecycle
 //   src/05-api.js          test and settings-panel APIs
+//   src/06-player-ui.js    player-controls toggle button
 
 (function () {
     'use strict';
@@ -86,8 +87,8 @@
     /** MVP external-trigger surface tokens for off-grid pad inputs. */
     const TRIGGER_SURFACES = Object.freeze([
         'outline-left', 'outline-right',
-        'external-left-center', 'external-left-edge',
-        'external-right-center', 'external-right-edge',
+        'external-left-center', 'external-left-edge', 'external-left-rim',
+        'external-right-center', 'external-right-edge', 'external-right-rim',
     ]);
     const TRIGGER_SURFACE_SET = new Set(TRIGGER_SURFACES);
     /** Short display labels kept compatible with the existing drum highway. */
@@ -111,6 +112,48 @@
         ride_bell: 'BLL',
         bell: 'BEL',
     };
+    /**
+     * Full human-readable piece names - the single source of truth for
+     * every "how does this piece read to a person" display in the plugin.
+     * Renderer label sprites and the settings panel's piece dropdowns/chips
+     * both read from this (settings.html fetches it via
+     * multipadH3dGetPieceFriendlyLabels) instead of each keeping its own
+     * copy, so the two can't drift out of sync. Distinct from PIECE_LABELS
+     * above, which are short abbreviations (SNR, HHc, ...) kept for the
+     * legacy drum_highway_3d-style short tags used elsewhere (event.label,
+     * pedal pulse text) - on-highway target labels use this full form.
+     */
+    const PIECE_FRIENDLY_LABELS = Object.freeze({
+        kick: 'Kick',
+        snare: 'Snare',
+        snare_xstick: 'Snare (cross-stick)',
+        hh_closed: 'Hi-hat (closed)',
+        hh_open: 'Hi-hat (open)',
+        hh_pedal: 'Hi-hat (pedal)',
+        tom_hi: 'Tom - high',
+        tom_mid: 'Tom - mid',
+        tom_low: 'Tom - low',
+        tom_floor: 'Floor tom',
+        stack: 'Stack',
+        crash_l: 'Crash (left)',
+        crash_r: 'Crash (right)',
+        splash: 'Splash',
+        china: 'China',
+        ride: 'Ride',
+        ride_bell: 'Ride bell',
+        bell: 'Bell',
+    });
+    /**
+     * Resolve a piece id to its full display name, falling back to the raw
+     * id for a future/unknown piece (matches settings.html's own `friendly()`
+     * fallback so the two never disagree on unknown input).
+     *
+     * @param {string} piece - Canonical drum piece id.
+     * @returns {string}
+     */
+    function friendlyPieceLabel(piece) {
+        return PIECE_FRIENDLY_LABELS[piece] || piece;
+    }
     /**
      * MVP routing fallbacks for pieces that do not have their own built-in pad.
      * These adapt the drum highway's kit fallback idea to a pad grid without
@@ -352,11 +395,13 @@
     const PAD_GAP = 0.16;
     const EXTERNAL_TRIGGER_PAD_DIAMETER = PAD_H;
     const EXTERNAL_TRIGGER_PAD_EDGE_WIDTH = 0.14;
+    // Third (outermost) trigger zone - a ring drawn around the edge ring,
+    // same thickness as the edge ring for a consistent concentric look.
+    const EXTERNAL_TRIGGER_PAD_RIM_WIDTH = 0.14;
     const GRID_CENTER_Y = 1.22;
     const PEDAL_OUTLINE_H = 0.11;
     const FLOOR_Y = -0.72;
     const TUNNEL_DEPTH = 22;
-    const TUNNEL_BACK_SCALE = 0.12;
     const TUNNEL_BACK_LIFT = 5.0;
     const TUNNEL_BACK_X_OFFSET = 14.0;
     const HIGHWAY_PITCH = 0;
@@ -364,8 +409,15 @@
     const HIGHWAY_Z_OFFSET = 0;
     const CAMERA_PAN_X = 1.35;
     const CAMERA_PAN_Y = 0.56;
-    const PAD_TARGET_FILL_OPACITY = 0.1;
-    const PAD_TARGET_EDGE_OPACITY = 0.9;
+    // Shared "colored outline with a faint fill" look for every plane-shaped
+    // assigned target zone - pads, and the pedal/trigger-outline surfaces
+    // that use the same rectangular addPlaneSurface geometry (see
+    // applyTargetZoneStyle in 04-renderer.js). Circular/ring external
+    // trigger zones don't need this: addCircleSurface/addRingSurface
+    // already fill with the routed color directly instead of a neutral
+    // theme.pad base, so they read correctly without a separate pass.
+    const TARGET_ZONE_FILL_OPACITY = 0.1;
+    const TARGET_ZONE_EDGE_OPACITY = 0.9;
     // Peak opacity of the whole-hit-group layout-preview outline, reached
     // while it's still far away. It fades linearly to fully 0 as the note
     // approaches the target (see placeLayoutPreview), rather than staying at
@@ -416,7 +468,11 @@
     // How long a note keeps rendering/moving past the hit plane before it's
     // culled. No hit detection exists yet (post-MVP), so every note passes
     // through unhandled - it keeps a brief bit of motion instead of freezing.
-    const NOTE_BEHIND_SEC = 0.18;
+    // Must be at least NOTE_PAST_THRESHOLD_FADE_SEC so the past-threshold
+    // opacity fade (see placeNote's isPastThreshold branch) always finishes
+    // reaching zero before the note is culled, instead of the mesh
+    // disappearing mid-fade.
+    const NOTE_BEHIND_SEC = 0.25;
     // How long a note takes to fade in from fully transparent after
     // spawning. Gems are drawn at their real target size from the moment
     // they spawn (no separate world-space size-growth curve - see
@@ -424,18 +480,31 @@
     // fade a gem would otherwise pop in abruptly at full opacity and full
     // size the instant it enters the lookahead window.
     const NOTE_SPAWN_FADE_SEC = 0.25;
-    // Gray + near-fully-transparent the instant a note passes its target -
-    // no fade in from a brighter starting point (see placeNote's
-    // isPastThreshold branch) - signaling "unhandled" without implying a
-    // miss judgement, since no hit detection exists yet. More transparent
-    // than the repeat-note gems (0.24 body / 0.2 face - see placeNote). A
-    // white threshold-crossing flash used to play here too, but even at a
-    // short duration it's normal- (not additive-) blended toward white, so
-    // it read as a lingering bright moment right when gems are supposed to
-    // go dim immediately - removed (see placeNote's flash suppression under
-    // isPastThreshold).
+    // Normal (non-repeat) gem opacity - body is the extruded block, face is
+    // the flat front label surface (see placeNote/acquireNoteMesh).
+    const NOTE_BODY_OPACITY = 0.82;
+    const NOTE_FACE_OPACITY = 0.98;
+    // Repeat-note gems (same surface hit again within the immediately
+    // previous hit group - see placeNote's isRepeat) render dimmer than a
+    // fresh gem, as a pad-grid-pattern cue (see PLANNING.md).
+    const NOTE_REPEAT_BODY_OPACITY = 0.24;
+    const NOTE_REPEAT_FACE_OPACITY = 0.2;
+    // Gray the instant a note passes its target - no fade in from a
+    // brighter starting point (see placeNote's isPastThreshold branch) -
+    // signaling "unhandled" without implying a miss judgement, since no hit
+    // detection exists yet. A white threshold-crossing flash used to play
+    // here too, but even at a short duration it's normal- (not additive-)
+    // blended toward white, so it read as a lingering bright moment right
+    // when gems are supposed to go dim immediately - removed (see
+    // placeNote's flash suppression under isPastThreshold).
     const NOTE_PAST_THRESHOLD_COLOR = 0x808080;
-    const NOTE_PAST_THRESHOLD_OPACITY = 0.05;
+    // Past-threshold gems always start their fade at the dimmer
+    // NOTE_REPEAT_*_OPACITY level - even a fresh (non-repeat) gem's own
+    // brighter NOTE_*_OPACITY read as too bright/lingering the instant
+    // after crossing - then ramp linearly down to fully invisible over this
+    // many seconds (see placeNote's isPastThreshold branch) - the rate is
+    // deliberately linear for now; may become eased later.
+    const NOTE_PAST_THRESHOLD_FADE_SEC = 0.25;
     const SPARK_COUNT = 192;
     const KICK_SHAKE_DECAY = 14;
     const KICK_SHAKE_MAGNITUDE = 0.09;
@@ -699,11 +768,11 @@
     function inferTriggerSlots(triggers) {
         const surfaces = new Set((Array.isArray(triggers) ? triggers : []).map(trigger => trigger && trigger.surface).filter(Boolean));
         const slots = [];
-        if (surfaces.has('external-left-center') || surfaces.has('external-left-edge')) {
-            slots.push({ id: 'trigger-1', zones: surfaces.has('external-left-edge') ? 2 : 1 });
+        if (surfaces.has('external-left-center') || surfaces.has('external-left-edge') || surfaces.has('external-left-rim')) {
+            slots.push({ id: 'trigger-1', zones: surfaces.has('external-left-rim') ? 3 : (surfaces.has('external-left-edge') ? 2 : 1) });
         }
-        if (surfaces.has('external-right-center') || surfaces.has('external-right-edge')) {
-            slots.push({ id: 'trigger-2', zones: surfaces.has('external-right-edge') ? 2 : 1 });
+        if (surfaces.has('external-right-center') || surfaces.has('external-right-edge') || surfaces.has('external-right-rim')) {
+            slots.push({ id: 'trigger-2', zones: surfaces.has('external-right-rim') ? 3 : (surfaces.has('external-right-edge') ? 2 : 1) });
         }
         return slots;
     }
@@ -711,13 +780,20 @@
     /**
      * Return a stable key for the pad geometry that should currently be drawn.
      *
+     * Includes each pad's full `pieces` list, not just `label` - a pad's
+     * label is derived from `pieces[0]` only (see `defaultLabelForPieces`),
+     * so adding/removing a non-first piece leaves `label` unchanged. The
+     * renderer's on-highway label now shows every piece (one line each),
+     * so the cache key must change whenever `pieces` does, or the surface
+     * grid rebuild that key gates would skip rendering the new piece list.
+     *
      * @param {object} profile - Validated or raw pad profile.
      * @returns {string} Stable layout key.
      */
     function padProfileLayoutKey(profile) {
         const valid = validatePadProfile(profile) || clonePadProfile(DEFAULT_PAD_PROFILE);
         const pads = valid.pads
-            .map(pad => [pad.id, pad.row, pad.col, pad.label].join(':'))
+            .map(pad => [pad.id, pad.row, pad.col, pad.label, pad.pieces.join(',')].join(':'))
             .sort()
             .join('|');
         return [valid.id, valid.rows, valid.cols, pads].join('|');
@@ -736,7 +812,17 @@
         const pedals = validatePedalProfile(pedalProfile) || clonePedalProfile(DEFAULT_PEDAL_PROFILE);
         const triggers = validateTriggerProfile(triggerProfile) || cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE);
         const activeSurfaceColor = Object.create(null);
+        // Pieces mapped onto each pedal/trigger surface key, aggregated
+        // across every pedal/trigger entry that targets it (normally just
+        // one, but validatePedalProfile doesn't dedup surfaces the way pads
+        // dedup coordinates, so two pedals can share a surface) - read by
+        // the renderer to build target labels (see buildSurfaceLabel in
+        // 04-renderer.js), same purpose `pad.pieces` already serves for pads.
+        const activeSurfacePieces = Object.create(null);
         for (const pedal of pedals.pedals) {
+            if (pedal.pieces.length > 0) {
+                (activeSurfacePieces[pedal.surface] || (activeSurfacePieces[pedal.surface] = [])).push(...pedal.pieces);
+            }
             if (pedal.pieces.length > 0 && activeSurfaceColor[pedal.surface] == null) {
                 const profileColor = colorHexFromCss(pedal.color);
                 activeSurfaceColor[pedal.surface] = profileColor !== null
@@ -745,6 +831,9 @@
             }
         }
         for (const trigger of triggers.triggers) {
+            if (trigger.pieces.length > 0) {
+                (activeSurfacePieces[trigger.surface] || (activeSurfacePieces[trigger.surface] = [])).push(...trigger.pieces);
+            }
             if (trigger.pieces.length > 0 && activeSurfaceColor[trigger.surface] == null) {
                 const profileColor = colorHexFromCss(trigger.color);
                 activeSurfaceColor[trigger.surface] = profileColor !== null
@@ -776,6 +865,7 @@
                 active,
                 opacity: active ? 0.82 : 0.34,
                 pad,
+                pieces: pad.pieces,
             });
         }
 
@@ -784,13 +874,15 @@
         const sideX = gridW / 2 + 0.25;
         const externalPadRadius = EXTERNAL_TRIGGER_PAD_DIAMETER / 2;
         const externalPadCenterRadius = externalPadRadius - EXTERNAL_TRIGGER_PAD_EDGE_WIDTH;
-        const externalPadX = gridW / 2 + 0.25 + 0.11 / 2 + externalPadRadius + 0.22;
+        const externalPadRimRadius = externalPadRadius + EXTERNAL_TRIGGER_PAD_RIM_WIDTH;
+        const externalPadX = gridW / 2 + 0.25 + 0.11 / 2 + externalPadRimRadius + 0.22;
         function controlledSurface(key, activeOpacity, inactiveOpacity) {
             const active = activeSurfaceColor[key] != null;
             return {
                 active,
                 color: active ? activeSurfaceColor[key] : SCENE_COLORS.inactiveSurface,
                 opacity: active ? activeOpacity : inactiveOpacity,
+                pieces: activeSurfacePieces[key] || [],
             };
         }
         const top = controlledSurface('outline-top', 0.2, 0.08);
@@ -799,17 +891,21 @@
         const right = controlledSurface('outline-right', 0.16, 0.06);
         const leftCenter = controlledSurface('external-left-center', 0.48, 0.16);
         const leftEdge = controlledSurface('external-left-edge', 0.82, 0.18);
+        const leftRim = controlledSurface('external-left-rim', 0.82, 0.18);
         const rightCenter = controlledSurface('external-right-center', 0.48, 0.16);
         const rightEdge = controlledSurface('external-right-edge', 0.82, 0.18);
+        const rightRim = controlledSurface('external-right-rim', 0.82, 0.18);
         surfaces.push(
-            { key: 'outline-top', kind: 'pedal-outline', shape: 'plane', x: 0, y: topY, w: gridW, h: PEDAL_OUTLINE_H, color: top.color, active: top.active, opacity: top.opacity },
-            { key: 'outline-bottom', kind: 'pedal-outline', shape: 'plane', x: 0, y: bottomY, w: gridW, h: PEDAL_OUTLINE_H, color: bottom.color, active: bottom.active, opacity: bottom.opacity },
-            { key: 'outline-left', kind: 'trigger-outline', shape: 'plane', x: -sideX, y: GRID_CENTER_Y, w: 0.11, h: gridH, color: left.color, active: left.active, opacity: left.opacity },
-            { key: 'outline-right', kind: 'trigger-outline', shape: 'plane', x: sideX, y: GRID_CENTER_Y, w: 0.11, h: gridH, color: right.color, active: right.active, opacity: right.opacity },
-            { key: 'external-left-center', kind: 'external-trigger-center', shape: 'circle', x: -externalPadX, y: GRID_CENTER_Y, w: externalPadCenterRadius * 2, h: externalPadCenterRadius * 2, radius: externalPadCenterRadius, color: leftCenter.color, active: leftCenter.active, opacity: leftCenter.opacity },
-            { key: 'external-left-edge', kind: 'external-trigger-edge', shape: 'ring', x: -externalPadX, y: GRID_CENTER_Y, w: EXTERNAL_TRIGGER_PAD_DIAMETER, h: EXTERNAL_TRIGGER_PAD_DIAMETER, innerRadius: externalPadCenterRadius, outerRadius: externalPadRadius, color: leftEdge.color, active: leftEdge.active, opacity: leftEdge.opacity },
-            { key: 'external-right-center', kind: 'external-trigger-center', shape: 'circle', x: externalPadX, y: GRID_CENTER_Y, w: externalPadCenterRadius * 2, h: externalPadCenterRadius * 2, radius: externalPadCenterRadius, color: rightCenter.color, active: rightCenter.active, opacity: rightCenter.opacity },
-            { key: 'external-right-edge', kind: 'external-trigger-edge', shape: 'ring', x: externalPadX, y: GRID_CENTER_Y, w: EXTERNAL_TRIGGER_PAD_DIAMETER, h: EXTERNAL_TRIGGER_PAD_DIAMETER, innerRadius: externalPadCenterRadius, outerRadius: externalPadRadius, color: rightEdge.color, active: rightEdge.active, opacity: rightEdge.opacity }
+            { key: 'outline-top', kind: 'pedal-outline', shape: 'plane', x: 0, y: topY, w: gridW, h: PEDAL_OUTLINE_H, color: top.color, active: top.active, opacity: top.opacity, pieces: top.pieces },
+            { key: 'outline-bottom', kind: 'pedal-outline', shape: 'plane', x: 0, y: bottomY, w: gridW, h: PEDAL_OUTLINE_H, color: bottom.color, active: bottom.active, opacity: bottom.opacity, pieces: bottom.pieces },
+            { key: 'outline-left', kind: 'trigger-outline', shape: 'plane', x: -sideX, y: GRID_CENTER_Y, w: 0.11, h: gridH, color: left.color, active: left.active, opacity: left.opacity, pieces: left.pieces },
+            { key: 'outline-right', kind: 'trigger-outline', shape: 'plane', x: sideX, y: GRID_CENTER_Y, w: 0.11, h: gridH, color: right.color, active: right.active, opacity: right.opacity, pieces: right.pieces },
+            { key: 'external-left-center', kind: 'external-trigger-center', shape: 'circle', x: -externalPadX, y: GRID_CENTER_Y, w: externalPadCenterRadius * 2, h: externalPadCenterRadius * 2, radius: externalPadCenterRadius, color: leftCenter.color, active: leftCenter.active, opacity: leftCenter.opacity, pieces: leftCenter.pieces },
+            { key: 'external-left-edge', kind: 'external-trigger-edge', shape: 'ring', x: -externalPadX, y: GRID_CENTER_Y, w: EXTERNAL_TRIGGER_PAD_DIAMETER, h: EXTERNAL_TRIGGER_PAD_DIAMETER, innerRadius: externalPadCenterRadius, outerRadius: externalPadRadius, color: leftEdge.color, active: leftEdge.active, opacity: leftEdge.opacity, pieces: leftEdge.pieces },
+            { key: 'external-left-rim', kind: 'external-trigger-rim', shape: 'ring', x: -externalPadX, y: GRID_CENTER_Y, w: externalPadRimRadius * 2, h: externalPadRimRadius * 2, innerRadius: externalPadRadius, outerRadius: externalPadRimRadius, color: leftRim.color, active: leftRim.active, opacity: leftRim.opacity, pieces: leftRim.pieces },
+            { key: 'external-right-center', kind: 'external-trigger-center', shape: 'circle', x: externalPadX, y: GRID_CENTER_Y, w: externalPadCenterRadius * 2, h: externalPadCenterRadius * 2, radius: externalPadCenterRadius, color: rightCenter.color, active: rightCenter.active, opacity: rightCenter.opacity, pieces: rightCenter.pieces },
+            { key: 'external-right-edge', kind: 'external-trigger-edge', shape: 'ring', x: externalPadX, y: GRID_CENTER_Y, w: EXTERNAL_TRIGGER_PAD_DIAMETER, h: EXTERNAL_TRIGGER_PAD_DIAMETER, innerRadius: externalPadCenterRadius, outerRadius: externalPadRadius, color: rightEdge.color, active: rightEdge.active, opacity: rightEdge.opacity, pieces: rightEdge.pieces },
+            { key: 'external-right-rim', kind: 'external-trigger-rim', shape: 'ring', x: externalPadX, y: GRID_CENTER_Y, w: externalPadRimRadius * 2, h: externalPadRimRadius * 2, innerRadius: externalPadRadius, outerRadius: externalPadRimRadius, color: rightRim.color, active: rightRim.active, opacity: rightRim.opacity, pieces: rightRim.pieces }
         );
 
         return {
@@ -829,8 +925,9 @@
     /**
      * Validate and normalize a pad layout.
      *
-     * The profile accepts explicit m x n layouts and drum piece ids, but rejects
-     * pedal pieces because the pedal profile owns pedal surface rendering.
+     * The profile accepts explicit m x n layouts and any known drum piece id -
+     * pieces are no longer restricted by category; any piece (including kick
+     * and hh_pedal) may be assigned to a pad, a pedal, or an external trigger.
      * Invalid top-level dimensions reject the whole profile so the caller can
      * fall back to the known-good default instead of guessing.
      * Unknown pieces, duplicate pad coordinates, duplicate pad ids, duplicate
@@ -839,9 +936,18 @@
      * UI and 3D highway can show them grayed out.
      *
      * @param {*} raw - Untrusted profile-like data.
+     * @param {Set<string>} [sharedAssignedPieces] - Piece-uniqueness set
+     *   shared across pad/pedal/trigger validation for one combined profile
+     *   (see validateMultipadProfile) - a piece already claimed here is
+     *   skipped, and every piece accepted here is added to it, so the same
+     *   piece can never end up live on two targets at once (that would
+     *   otherwise route the same chart hit to two on-screen targets, only
+     *   one of which the routing priority in projectDrumTab ever actually
+     *   fires). Defaults to a fresh, call-local Set when validating a pad
+     *   profile on its own (dedup then only applies within this pad profile).
      * @returns {object|null} Normalized profile or null when unusable.
      */
-    function validatePadProfile(raw) {
+    function validatePadProfile(raw, sharedAssignedPieces) {
         if (!raw || typeof raw !== 'object') return null;
         const rows = raw.rows;
         const cols = raw.cols;
@@ -853,7 +959,7 @@
         const pads = [];
         const occupied = new Set();
         const usedPadIds = new Set();
-        const assignedPieces = new Set();
+        const assignedPieces = sharedAssignedPieces || new Set();
         for (let i = 0; i < rawPads.length; i++) {
             const pad = rawPads[i];
             if (!pad || typeof pad !== 'object') continue;
@@ -870,7 +976,6 @@
             const pieces = [];
             const rawPieces = Array.isArray(pad.pieces) ? pad.pieces : [];
             for (const piece of rawPieces) {
-                if (PEDAL_PIECE_SET.has(piece)) continue;
                 if (!PIECE_SET.has(piece)) continue;
                 if (assignedPieces.has(piece)) continue;
                 assignedPieces.add(piece);
@@ -893,6 +998,12 @@
         }
         if (pads.length === 0) return null;
 
+        // Fallback substitution is intentionally still pedal-piece-free: it's
+        // a "no direct pad assignment? borrow this other piece's pad" kit
+        // convenience for near-identical drum variants (open/closed hi-hat,
+        // tom sizes, cymbal variants), never something kick/hh_pedal have
+        // participated in - unrelated to (and not loosened by) the direct
+        // per-piece assignment restriction lifted above.
         const fallbacks = Object.create(null);
         const rawFallbacks = raw.fallbacks && typeof raw.fallbacks === 'object' ? raw.fallbacks : {};
         for (const piece of Object.keys(rawFallbacks)) {
@@ -916,20 +1027,35 @@
     /**
      * Validate and normalize the pedal profile.
      *
-     * MVP supports kick and hi-hat pedal as separate surfaces. Keeping this
-     * separate from pads lets later profiles change foot controls without
-     * changing the built-in pad layout schema.
-     * Pedals with no assigned pieces remain valid inactive pedals. Duplicate
-     * pedal pieces are allowed so two physical pedals can both map to kick.
+     * Pedal surfaces accept any known drum piece id, not just kick/hh_pedal -
+     * any piece may be assigned to a pad, a pedal, or an external trigger.
+     * Each pedal still holds at most one piece. Pedals with no assigned
+     * pieces remain valid inactive pedals. A piece already claimed by an
+     * earlier pedal (or, via `sharedAssignedPieces`, by a pad or trigger in
+     * the same combined profile) is dropped rather than duplicated - two
+     * pedals can no longer both map to kick, since a piece live on two
+     * targets would only ever actually fire from one of them (see
+     * projectDrumTab's pedal > trigger > pad routing priority) while the
+     * other still displayed as if assigned.
      *
      * @param {*} raw - Untrusted profile-like data.
+     * @param {Set<string>} [sharedAssignedPieces] - See validatePadProfile's
+     *   parameter of the same name.
      * @returns {object|null} Normalized pedal profile or null when unusable.
      */
-    function validatePedalProfile(raw) {
+    function validatePedalProfile(raw, sharedAssignedPieces) {
         if (!raw || typeof raw !== 'object') return null;
         const rawPedals = Array.isArray(raw.pedals) ? raw.pedals : null;
         if (!rawPedals) return null;
 
+        const assignedPieces = sharedAssignedPieces || new Set();
+        // Surface dedup, mirroring validateTriggerProfile's occupiedSurfaces:
+        // now that any piece (not just hh_pedal/kick) can land on a pedal,
+        // two pedals requesting/defaulting to the same surface is reachable
+        // (e.g. two non-hh_pedal pieces both default to 'outline-bottom').
+        // Falling back to the other PEDAL_SURFACES entry instead of just
+        // dropping the pedal keeps both pedals usable.
+        const occupiedSurfaces = new Set();
         const pedals = [];
         for (let i = 0; i < rawPedals.length; i++) {
             if (pedals.length >= 2) break;
@@ -939,16 +1065,21 @@
             const pieces = [];
             const rawPieces = Array.isArray(pedal.pieces) ? pedal.pieces : [];
             for (const piece of rawPieces) {
-                if (!PEDAL_PIECE_SET.has(piece)) continue;
-                if (pieces.includes(piece)) continue;
+                if (!PIECE_SET.has(piece)) continue;
+                if (assignedPieces.has(piece)) continue;
+                assignedPieces.add(piece);
                 pieces.push(piece);
                 break;
             }
             const defaultPiece = pieces[0] || (i === 0 ? 'hh_pedal' : 'kick');
             const requestedSurface = typeof pedal.surface === 'string' ? pedal.surface.trim() : '';
-            const surface = PEDAL_SURFACE_SET.has(requestedSurface)
+            let surface = PEDAL_SURFACE_SET.has(requestedSurface)
                 ? requestedSurface
                 : (defaultPiece === 'hh_pedal' ? 'outline-top' : 'outline-bottom');
+            if (occupiedSurfaces.has(surface)) {
+                surface = PEDAL_SURFACES.find(candidate => !occupiedSurfaces.has(candidate)) || surface;
+            }
+            occupiedSurfaces.add(surface);
             const color = sanitizeProfileColor(pedal.color, PIECE_COLORS[defaultPiece] || SCENE_COLORS.inactiveSurface);
             pedals.push({
                 id: sanitizeProfileId(pedal.id, 'pedal-' + (i + 1)),
@@ -971,25 +1102,28 @@
      * Validate and normalize the external pad trigger profile.
      *
      * These are off-grid pad inputs such as a plugged-in snare pad. They use
-     * surface tokens like pedals do, but accept only pad pieces. Trigger zones
-     * with no assigned pieces remain valid inactive surfaces.
+     * surface tokens like pedals do, and accept any known drum piece id -
+     * any piece may be assigned to a pad, a pedal, or an external trigger.
+     * Trigger zones with no assigned pieces remain valid inactive surfaces.
      *
      * @param {*} raw - Untrusted profile-like data.
+     * @param {Set<string>} [sharedAssignedPieces] - See validatePadProfile's
+     *   parameter of the same name.
      * @returns {object|null} Normalized trigger profile or null when unusable.
      */
-    function validateTriggerProfile(raw) {
+    function validateTriggerProfile(raw, sharedAssignedPieces) {
         if (!raw || typeof raw !== 'object') return null;
         const rawTriggers = Array.isArray(raw.triggers) ? raw.triggers : null;
         if (!rawTriggers) return null;
 
         const triggers = [];
-        const assignedPieces = new Set();
+        const assignedPieces = sharedAssignedPieces || new Set();
         const occupiedSurfaces = new Set();
         const usedTriggerIds = new Set();
         for (let i = 0; i < rawTriggers.length; i++) {
             const trigger = rawTriggers[i];
             if (!trigger || typeof trigger !== 'object') continue;
-            if (triggers.length >= 4) break;
+            if (triggers.length >= 6) break;
             const surface = typeof trigger.surface === 'string' ? trigger.surface.trim() : '';
             if (!TRIGGER_SURFACE_SET.has(surface)) continue;
             if (occupiedSurfaces.has(surface)) continue;
@@ -1001,7 +1135,6 @@
             const pieces = [];
             const rawPieces = Array.isArray(trigger.pieces) ? trigger.pieces : [];
             for (const piece of rawPieces) {
-                if (PEDAL_PIECE_SET.has(piece)) continue;
                 if (!PIECE_SET.has(piece)) continue;
                 if (assignedPieces.has(piece)) continue;
                 assignedPieces.add(piece);
@@ -1031,7 +1164,7 @@
             if (id !== 'trigger-1' && id !== 'trigger-2') continue;
             if (usedSlotIds.has(id)) continue;
             usedSlotIds.add(id);
-            triggerSlots.push({ id, zones: clampNumber(slot.zones, 1, 2, 1) >= 2 ? 2 : 1 });
+            triggerSlots.push({ id, zones: Math.round(clampNumber(slot.zones, 1, 3, 1)) });
             if (triggerSlots.length >= 2) break;
         }
 
@@ -1211,11 +1344,58 @@
         };
     }
 
+    /**
+     * Pieces already claimed by a pad, pedal, or trigger anywhere in a
+     * combined multipad profile - the read-only counterpart to
+     * `validateMultipadProfile`'s `sharedAssignedPieces` write-time dedup.
+     * Both answer the same "who else has this piece" question; this one is
+     * for callers (the settings UI) that want to filter/preview choices
+     * against an already-in-memory, already-consistent profile object
+     * without re-running full validation, so it's exposed via
+     * `multipadH3dGetAssignedPieces` (05-api.js) instead of each caller
+     * hand-rolling its own version of this walk.
+     *
+     * @param {object} profile - A `{padProfile, pedalProfile, triggerProfile}` shape.
+     * @param {object} [options]
+     * @param {(pad: object) => boolean} [options.skipPad] - Exclude a pad
+     *   (e.g. the one currently being edited) from the count.
+     * @param {(pedal: object) => boolean} [options.skipPedal]
+     * @param {(trigger: object) => boolean} [options.skipTrigger]
+     * @returns {Set<string>}
+     */
+    function collectAssignedPieces(profile, options) {
+        const { skipPad, skipPedal, skipTrigger } = options || {};
+        const assigned = new Set();
+        const pads = (profile && profile.padProfile && profile.padProfile.pads) || [];
+        for (const pad of pads) {
+            if (skipPad && skipPad(pad)) continue;
+            for (const piece of pad.pieces || []) assigned.add(piece);
+        }
+        const pedals = (profile && profile.pedalProfile && profile.pedalProfile.pedals) || [];
+        for (const pedal of pedals) {
+            if (skipPedal && skipPedal(pedal)) continue;
+            for (const piece of pedal.pieces || []) assigned.add(piece);
+        }
+        const triggers = (profile && profile.triggerProfile && profile.triggerProfile.triggers) || [];
+        for (const trigger of triggers) {
+            if (skipTrigger && skipTrigger(trigger)) continue;
+            for (const piece of trigger.pieces || []) assigned.add(piece);
+        }
+        return assigned;
+    }
+
     function validateMultipadProfile(raw) {
         if (!raw || typeof raw !== 'object') return null;
-        const padProfile = validatePadProfile(raw.padProfile);
-        const pedalProfile = validatePedalProfile(raw.pedalProfile);
-        const triggerProfile = validateTriggerProfile(raw.triggerProfile);
+        // One Set shared across all three validators enforces "any piece
+        // assigned to at most one target total" across the whole combined
+        // profile, not just within each profile type - pad wins over pedal
+        // wins over trigger on conflict (silently dropped from the later
+        // one, same "drop instead of throw" style as every other duplicate
+        // check in this file).
+        const sharedAssignedPieces = new Set();
+        const padProfile = validatePadProfile(raw.padProfile, sharedAssignedPieces);
+        const pedalProfile = validatePedalProfile(raw.pedalProfile, sharedAssignedPieces);
+        const triggerProfile = validateTriggerProfile(raw.triggerProfile, sharedAssignedPieces);
         if (!padProfile || !pedalProfile || !triggerProfile) return null;
         return {
             version: 1,
@@ -1229,7 +1409,7 @@
 
     function profileForPadLayout(layoutId) {
         const pad = clonePadProfile(BUILTIN_PAD_PROFILES[layoutId] || DEFAULT_PAD_PROFILE);
-        return {
+        const raw = {
             version: 1,
             id: pad.id,
             name: pad.name,
@@ -1237,6 +1417,16 @@
             pedalProfile: clonePedalProfile(DEFAULT_PEDAL_PROFILE),
             triggerProfile: cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE),
         };
+        // Route through validateMultipadProfile rather than returning the
+        // hand-composed object directly, so this path enforces the same
+        // "a piece lives on at most one target" invariant every other
+        // profile-construction path does (readMultipadProfile's legacy
+        // padProfileId-only branch calls this directly, with no other
+        // validation in between). No built-in pad layout currently assigns
+        // a pedal-claimed piece, so this is a no-op today - it's here so a
+        // future built-in layout that does can't silently produce a
+        // profile with one piece live on two surfaces.
+        return validateMultipadProfile(raw) || raw;
     }
 
     function readMultipadProfile() {
@@ -1353,6 +1543,13 @@
      * records the fallback `routedPiece`, so rendering can keep labels/variants
      * honest while sharing a pad for pieces such as open/closed hi-hat.
      *
+     * Iterates ALL_PIECES rather than PAD_PIECES so a piece like kick or
+     * hh_pedal - now assignable to a pad, not just a pedal - actually gets
+     * routed when a profile does exactly that; PAD_PIECES/PIECE_FALLBACKS
+     * still only ever cover non-pedal pieces, so this doesn't change
+     * fallback behavior for kick/hh_pedal (neither appears as a fallback
+     * key or value), only makes their own direct pad assignment work.
+     *
      * @param {object} padProfile - Validated or raw pad profile.
      * @returns {object} Map of piece id to { routeType, pad, routedPiece }.
      */
@@ -1366,7 +1563,7 @@
         }
 
         const routed = Object.create(null);
-        for (const piece of PAD_PIECES) {
+        for (const piece of ALL_PIECES) {
             if (direct[piece]) {
                 routed[piece] = Object.assign({ routedPiece: piece }, direct[piece]);
                 continue;
@@ -1734,6 +1931,55 @@
     }
 
     /**
+     * Project a rectangle's 4 corners into world space at a given travel
+     * progress, via projectGridPoint - the same single-source-of-truth
+     * formula every other on-grid position (note gems, the layout-preview
+     * outline, the tunnel guide lines) already goes through. Centralizes
+     * "corner = center point +/- half width/height, unscaled" so a second
+     * caller never has to re-derive it independently (see addTunnelLines'
+     * history: its front/back corners used to each hand-roll this).
+     *
+     * @param {number} x - Surface center X (same convention as surface.x).
+     * @param {number} y - Surface center Y (same convention as surface.y,
+     *   i.e. NOT yet offset from GRID_CENTER_Y - that conversion happens here).
+     * @param {number} w - Rect width.
+     * @param {number} h - Rect height.
+     * @param {number} progress - Travel progress passed through to projectGridPoint.
+     * @param {number} z - World-space Z shared by all 4 returned corners.
+     * @returns {Array<[number, number, number]>} Corners in TL, TR, BR, BL order.
+     */
+    function projectRectCorners(x, y, w, h, progress, z) {
+        const localOffsetY = y - GRID_CENTER_Y;
+        return [
+            [-w / 2, -h / 2],
+            [w / 2, -h / 2],
+            [w / 2, h / 2],
+            [-w / 2, h / 2],
+        ].map(([dx, dy]) => {
+            const p = projectGridPoint(x + dx, localOffsetY + dy, progress);
+            return [p.x, p.y, z];
+        });
+    }
+
+    /**
+     * Opacity of a note gem some time after it has crossed its target
+     * threshold. Ramps linearly from `baseOpacity` (whatever opacity the
+     * gem had the instant before crossing) down to 0 (fully invisible) over
+     * NOTE_PAST_THRESHOLD_FADE_SEC seconds, then stays at 0. Color is not
+     * handled here - placeNote snaps color to NOTE_PAST_THRESHOLD_COLOR
+     * instantly, independent of this fade.
+     *
+     * @param {number} baseOpacity - Opacity immediately before crossing.
+     * @param {number} secSinceCrossing - Seconds elapsed since the note's dt
+     *   crossed 0 (i.e. `-dt`); expected >= 0.
+     * @returns {number} Opacity in [0, baseOpacity].
+     */
+    function pastThresholdOpacity(baseOpacity, secSinceCrossing) {
+        const fadeOutFactor = Math.max(0, 1 - secSinceCrossing / NOTE_PAST_THRESHOLD_FADE_SEC);
+        return baseOpacity * fadeOutFactor;
+    }
+
+    /**
      * Build one renderer instance for the host setRenderer lifecycle.
      *
      * The renderer keeps all Three.js state instance-local. Stable
@@ -1763,6 +2009,7 @@
         let noteFaceGeometry = null;
         let noteMaterials = new Map();
         let noteMeshPool = [];
+        let tunnelLinesMesh = null;
         let layoutPreviewGroup = null;
         let layoutPreviewGroupFrameGeometry = null;
         let layoutPreviewGroupMaterial = null;
@@ -2329,6 +2576,18 @@
             const noteMaterialChanged = !activeSettings || next.glowStrength !== activeSettings.glowStrength;
             const cinematicChanged = !activeSettings || next.cinematicLighting !== activeSettings.cinematicLighting;
             const backgroundChanged = !activeSettings || next.backgroundStyle !== activeSettings.backgroundStyle || next.backgroundIntensity !== activeSettings.backgroundIntensity;
+            // Label sprites are only built when showLabels is on (see
+            // buildSurfaceGrid) - skipping the canvas/texture work entirely
+            // while labels are off, rather than always building them and
+            // only hiding via labelGroup.visible. So flipping the setting
+            // off -> on needs to force one real surface-grid rebuild to
+            // actually create them: nulling activeSurfaceLayoutKey makes
+            // the very next buildSurfaceGrid call (reached via the normal
+            // settingsVersion-bump -> projection-cache-miss path every
+            // writeSetting call already triggers) miss its own cache check
+            // instead of early-returning with no labels built.
+            const labelsJustEnabled = !!next.showLabels && !(activeSettings && activeSettings.showLabels);
+            if (labelsJustEnabled) activeSurfaceLayoutKey = null;
             activeSettings = next;
             if (labelGroup) labelGroup.visible = !!activeSettings.showLabels;
             if (camera) applyCameraSettings();
@@ -2355,11 +2614,11 @@
             if (surfaceGroup) {
                 for (const surface of Object.values(surfaces)) {
                     if (!surface.active) continue;
-                    if (surface.kind === 'pad' && surface.baseEmissiveColor != null) {
-                        applyPadTargetStyle(surface, surface.baseEmissiveColor);
+                    if (TARGET_ZONE_PLANE_KINDS.has(surface.kind) && surface.baseEmissiveColor != null) {
+                        applyTargetZoneStyle(surface, surface.baseEmissiveColor);
                         continue;
                     }
-                    if (surface.material && surface.material.color && surface.kind !== 'external-trigger-center' && surface.kind !== 'external-trigger-edge') {
+                    if (surface.material && surface.material.color && surface.kind !== 'external-trigger-center' && surface.kind !== 'external-trigger-edge' && surface.kind !== 'external-trigger-rim') {
                         surface.material.color.setHex(theme.pad);
                     }
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(theme.edge);
@@ -2376,29 +2635,56 @@
         }
 
         /**
-         * Create a texture-backed sprite label for a pad surface.
+         * Create a texture-backed sprite label from one or more lines of
+         * text, stacked top-to-bottom and centered as a block. Font size
+         * shrinks both as more lines are stacked and per-line when a single
+         * line (e.g. a long full piece name like "Snare (cross-stick)")
+         * would otherwise overflow the canvas, instead of ever hard-cutting
+         * text to a fixed character count.
          *
-         * @param {string} text - Short label text.
+         * @param {string|Array<string>} lines - Text to render; a bare
+         *   string is treated as a single line. Falsy/empty entries are
+         *   dropped.
          * @param {number} width - Sprite width in world units.
          * @param {number} height - Sprite height in world units.
-         * @returns {object|null} Three.js sprite, or null when canvas is unavailable.
+         * @returns {object|null} Three.js sprite, or null when canvas is
+         *   unavailable or there is no non-empty text to render.
          */
-        function createLabelSprite(text, width, height) {
+        function createLabelSprite(lines, width, height) {
             if (typeof document === 'undefined' || !document.createElement) return null;
+            const items = (Array.isArray(lines) ? lines : [lines]).map(l => String(l || '')).filter(Boolean);
+            if (!items.length) return null;
             const c = document.createElement('canvas');
-            c.width = 256;
-            c.height = 96;
+            c.width = 384;
+            c.height = 160;
             const ctx = c.getContext('2d');
             if (!ctx) return null;
             ctx.clearRect(0, 0, c.width, c.height);
-            ctx.font = '700 36px system-ui, -apple-system, Segoe UI, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.lineWidth = 6;
+            ctx.lineWidth = 5;
             ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
             ctx.fillStyle = SCENE_COLORS.text;
-            ctx.strokeText(String(text || '').slice(0, 8), c.width / 2, c.height / 2);
-            ctx.fillText(String(text || '').slice(0, 8), c.width / 2, c.height / 2);
+            const maxTextWidth = c.width - 24;
+            const rowHeight = c.height / items.length;
+            // Scaled directly off the available row height (not a fixed
+            // floor) so a pad/trigger with many stacked pieces keeps
+            // shrinking instead of overlapping once row height drops below
+            // what a fixed minimum font would need - the per-line
+            // width-based shrink loop below still applies on top of this.
+            const baseFontPx = Math.max(8, Math.min(34, Math.floor(rowHeight * 0.72)));
+            const fontAt = px => `700 ${px}px system-ui, -apple-system, Segoe UI, sans-serif`;
+            items.forEach((text, i) => {
+                let fontPx = baseFontPx;
+                ctx.font = fontAt(fontPx);
+                while (fontPx > 11 && ctx.measureText(text).width > maxTextWidth) {
+                    fontPx -= 2;
+                    ctx.font = fontAt(fontPx);
+                }
+                const y = rowHeight * i + rowHeight / 2;
+                ctx.strokeText(text, c.width / 2, y);
+                ctx.fillText(text, c.width / 2, y);
+            });
             const texture = new T.CanvasTexture(c);
             const material = new T.SpriteMaterial({
                 map: texture,
@@ -2411,7 +2697,62 @@
         }
 
         /**
+         * Reasonable label box (world units) for a non-pad target surface,
+         * derived from its own geometry - wide/short rectangles for
+         * pedal/trigger outline bars, radius-scaled for circular/ring
+         * external trigger zones. Pads use their own fixed, separately
+         * tuned PAD_W/PAD_H-based box (see buildSurfaceLabel) since that
+         * size was already tuned for the single-line abbreviation label
+         * and is kept unchanged for the common case.
+         *
+         * @param {object} desc - Surface descriptor from buildSurfaceLayout.
+         * @returns {{w: number, h: number}}
+         */
+        function labelBoxForSurface(desc) {
+            if (desc.shape === 'circle' || desc.shape === 'ring') {
+                const r = desc.radius || desc.w / 2;
+                return { w: Math.min(2.2, Math.max(0.5, r * 1.7)), h: Math.min(0.42, Math.max(0.16, r * 0.9)) };
+            }
+            return { w: Math.min(2.2, Math.max(0.5, desc.w * 0.7)), h: Math.min(0.42, Math.max(0.16, desc.h * 0.6)) };
+        }
+
+        /**
+         * Build the label sprite for one surface descriptor, if any - full
+         * friendly piece names (see PIECE_FRIENDLY_LABELS/friendlyPieceLabel
+         * in 01-constants.js), one per line, matching how pieces are shown
+         * in the settings panel rather than the short PIECE_LABELS
+         * abbreviations that aren't used anywhere else. A pad always gets a
+         * label (an em dash placeholder when unassigned, matching the
+         * existing "Unassigned" chip convention in settings.html); pedal
+         * and trigger surfaces only get one when at least one piece is
+         * actually mapped there.
+         *
+         * @param {object} desc - Surface descriptor from buildSurfaceLayout.
+         * @returns {object|null} Three.js sprite, or null.
+         */
+        function buildSurfaceLabel(desc) {
+            const pieces = desc.pieces || [];
+            if (desc.kind === 'pad') {
+                const lines = pieces.length ? pieces.map(friendlyPieceLabel) : ['—'];
+                return createLabelSprite(lines, PAD_W * 0.58, PAD_H * 0.26);
+            }
+            if (!pieces.length) return null;
+            const box = labelBoxForSurface(desc);
+            return createLabelSprite(pieces.map(friendlyPieceLabel), box.w, box.h);
+        }
+
+        /**
          * Add receding tunnel guide lines behind one pad surface.
+         *
+         * Corners come from projectRectCorners (front at progress=1, the
+         * real position; back at progress=0, the same far/vanishing point
+         * note gems spawn from) instead of a hand-rolled formula, so these
+         * lines are guaranteed to converge exactly like the note gems
+         * traveling through them - a previous version scaled each back
+         * corner's offset from center by a fixed TUNNEL_BACK_SCALE, which
+         * doesn't match how projectGridPoint (the single source of truth
+         * for every other on-grid position) converges, and the lines
+         * visibly didn't line up with the gems.
          *
          * @param {number} x - Surface center X.
          * @param {number} y - Surface center Y.
@@ -2421,20 +2762,8 @@
          * @returns {void}
          */
         function addTunnelLines(x, y, w, h, group) {
-            const front = [
-                [x - w / 2, y - h / 2, 0.015],
-                [x + w / 2, y - h / 2, 0.015],
-                [x + w / 2, y + h / 2, 0.015],
-                [x - w / 2, y + h / 2, 0.015],
-            ];
-            const backX = TUNNEL_BACK_X_OFFSET + x * TUNNEL_BACK_SCALE;
-            const backY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
-            const back = [
-                [backX - w * TUNNEL_BACK_SCALE / 2, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX + w * TUNNEL_BACK_SCALE / 2, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX + w * TUNNEL_BACK_SCALE / 2, backY + h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX - w * TUNNEL_BACK_SCALE / 2, backY + h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-            ];
+            const front = projectRectCorners(x, y, w, h, 1, 0.015);
+            const back = projectRectCorners(x, y, w, h, 0, -TUNNEL_DEPTH);
             const vertices = [];
             for (let i = 0; i < 4; i++) {
                 const next = (i + 1) % 4;
@@ -2454,6 +2783,10 @@
             // instead of z-fighting/poking through them.
             lines.renderOrder = 1;
             group.add(lines);
+            // Debug-only - read by __probe()'s `tunnelLineVertices` so tests
+            // can verify the guide lines' back corners actually match
+            // projectGridPoint instead of a hand-rolled formula.
+            tunnelLinesMesh = lines;
         }
 
         /**
@@ -2563,7 +2896,7 @@
         }
 
         /**
-         * Add one thick ring render surface for external trigger edge zones.
+         * Add one thick ring render surface for external trigger edge/rim zones.
          *
          * @param {string} key - Surface id.
          * @param {number} x - Surface center X.
@@ -2609,26 +2942,36 @@
             };
         }
 
+        // Plane-shaped (addPlaneSurface) target-zone kinds that should read
+        // as a colored outline with a faint fill once assigned - pads,
+        // pedal outline bars, and outline-left/outline-right trigger
+        // surfaces. Circle/ring external-trigger zones are deliberately
+        // excluded (see TARGET_ZONE_FILL_OPACITY's comment).
+        const TARGET_ZONE_PLANE_KINDS = new Set(['pad', 'pedal-outline', 'trigger-outline']);
+
         /**
-         * Make a regular pad target read as a colored outline with a faint fill.
+         * Make an assigned plane-shaped target zone (pad, pedal outline, or
+         * trigger outline) read as a colored outline with a faint fill,
+         * instead of the neutral theme-colored fill/edge addPlaneSurface
+         * builds by default.
          *
          * @param {object} surface - Surface descriptor returned by addPlaneSurface.
-         * @param {number} colorHex - Pad route color.
+         * @param {number} colorHex - Routed target color.
          * @returns {void}
          */
-        function applyPadTargetStyle(surface, colorHex) {
+        function applyTargetZoneStyle(surface, colorHex) {
             if (!surface) return;
             if (surface.material) {
                 if (surface.material.color) surface.material.color.setHex(colorHex);
                 if (surface.material.emissive) surface.material.emissive.setHex(colorHex);
                 surface.material.emissiveIntensity = 0.04;
-                surface.material.opacity = PAD_TARGET_FILL_OPACITY;
+                surface.material.opacity = TARGET_ZONE_FILL_OPACITY;
             }
             if (surface.edgeMaterial) {
                 if (surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(colorHex);
-                surface.edgeMaterial.opacity = PAD_TARGET_EDGE_OPACITY;
+                surface.edgeMaterial.opacity = TARGET_ZONE_EDGE_OPACITY;
             }
-            surface.baseOpacity = PAD_TARGET_FILL_OPACITY;
+            surface.baseOpacity = TARGET_ZONE_FILL_OPACITY;
             surface.baseEmissiveColor = colorHex;
             surface.baseEmissiveIntensity = 0.04;
         }
@@ -2688,20 +3031,26 @@
                     if (surface.material && surface.material.emissive) surface.material.emissive.setHex(SCENE_COLORS.inactiveSurface);
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(SCENE_COLORS.inactiveEdge);
                     if (surface.edgeMaterial) surface.edgeMaterial.opacity = 0.35;
-                } else if (desc.kind === 'pad') {
-                    applyPadTargetStyle(surface, desc.color);
+                } else if (TARGET_ZONE_PLANE_KINDS.has(desc.kind)) {
+                    applyTargetZoneStyle(surface, desc.color);
                 }
                 if (surface.material && surface.material.emissive && typeof surface.material.emissive.getHex === 'function') {
                     surface.baseEmissiveColor = surface.material.emissive.getHex();
                 }
                 surface.kind = desc.kind;
                 surfaces[surface.key] = surface;
-                if (desc.kind === 'pad') {
-                    const label = activeSettings.showLabels ? createLabelSprite(desc.pad.label || '—', PAD_W * 0.58, PAD_H * 0.26) : null;
-                    if (label) {
-                        label.position.set(desc.x, desc.y, 0.08);
-                        labelGroup.add(label);
-                    }
+                // Skipped entirely (no canvas/texture work) when labels are
+                // off, rather than always built and only hidden via
+                // labelGroup.visible - updateSettingsFromStorage forces one
+                // rebuild when showLabels flips off -> on, so toggling live
+                // still works without ever leaving labelGroup empty.
+                const label = activeSettings.showLabels ? buildSurfaceLabel(desc) : null;
+                if (label) {
+                    label.position.set(desc.x, desc.y, 0.08);
+                    // Debug-only - read by __probe()'s `labels` so tests can
+                    // correlate a label sprite back to the surface it belongs to.
+                    label.userData.surfaceKey = desc.key;
+                    labelGroup.add(label);
                 }
             }
         }
@@ -3173,21 +3522,30 @@
             // pedal/trigger gems always render at full opacity regardless of
             // their own repeatedFromPreviousGroup value.
             const isRepeat = event.type === 'pad' && !!event.repeatedFromPreviousGroup;
+            // Debug-only fields read by __probe()'s `notes` snapshot - not
+            // used by any rendering path. Lets tests correlate a pooled
+            // mesh back to the event that placed it this frame.
+            note.debugSurfaceId = event.surfaceId;
+            note.debugIsRepeat = isRepeat;
+            note.debugIsPastThreshold = isPastThreshold;
             note.group.position.set(x, y, z);
             note.body.scale.set(w, bodyH, 0.11);
             note.face.scale.set(w, bodyH, 1);
             if (isPastThreshold) {
-                // Snap straight to the dim, near-invisible state the instant
-                // a note crosses the threshold - no gradual fade down from a
-                // brighter starting point. A fade window here meant the gem
-                // stayed noticeably visible (and, combined with continuing
-                // to grow via perspective, noticeably large) for a
-                // perceptible stretch right after crossing.
-                note.body.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
-                note.face.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
+                // Color already snapped to gray above (isPastThreshold's
+                // color branch) - no gradual color fade. Opacity ramps
+                // linearly to fully invisible over NOTE_PAST_THRESHOLD_FADE_SEC
+                // (see pastThresholdOpacity), always starting from the
+                // dimmer repeat-gem level regardless of isRepeat - even a
+                // fresh gem's own brighter NOTE_*_OPACITY read as too
+                // bright/lingering the instant after crossing. dt is <= 0
+                // here, so -dt is seconds elapsed since crossing.
+                const secSinceCrossing = -dt;
+                note.body.material.opacity = pastThresholdOpacity(NOTE_REPEAT_BODY_OPACITY * fadeInFactor, secSinceCrossing);
+                note.face.material.opacity = pastThresholdOpacity(NOTE_REPEAT_FACE_OPACITY * fadeInFactor, secSinceCrossing);
             } else {
-                note.body.material.opacity = (isRepeat ? 0.24 : 0.82) * fadeInFactor;
-                note.face.material.opacity = (isRepeat ? 0.2 : 0.98) * fadeInFactor;
+                note.body.material.opacity = (isRepeat ? NOTE_REPEAT_BODY_OPACITY : NOTE_BODY_OPACITY) * fadeInFactor;
+                note.face.material.opacity = (isRepeat ? NOTE_REPEAT_FACE_OPACITY : NOTE_FACE_OPACITY) * fadeInFactor;
                 if (!isRepeat && surface.kind === 'pad') {
                     placeLayoutPreview(z, scaleProgress, fadeInFactor);
                 }
@@ -3352,6 +3710,7 @@
             highwayGroup = null;
             surfaceGroup = null;
             notesGroup = null;
+            tunnelLinesMesh = null;
             layoutPreviewGroup = null;
             layoutPreviewGroupFrameGeometry = null;
             layoutPreviewGroupMaterial = null;
@@ -3486,6 +3845,65 @@
                     height: lastHeight,
                     hasBundle: !!lastBundle,
                     surfaces: Object.keys(surfaces).length,
+                    // Per-surface fill/edge color+opacity snapshot, keyed the
+                    // same as the internal `surfaces` map - lets tests verify
+                    // the actual applied Three.js material state (e.g. "does
+                    // an assigned pedal surface really get a colored edge")
+                    // rather than only the pre-render layout descriptors.
+                    surfaceStyles: Object.fromEntries(Object.entries(surfaces).map(([key, s]) => [key, {
+                        kind: s.kind,
+                        active: !!s.active,
+                        fillColor: s.material && s.material.color && typeof s.material.color.getHex === 'function' ? s.material.color.getHex() : null,
+                        fillOpacity: s.material ? s.material.opacity : null,
+                        edgeColor: s.edgeMaterial && s.edgeMaterial.color && typeof s.edgeMaterial.color.getHex === 'function' ? s.edgeMaterial.color.getHex() : null,
+                        edgeOpacity: s.edgeMaterial ? s.edgeMaterial.opacity : null,
+                    }])),
+                    // This frame's visible note gems, in placement order -
+                    // lets tests verify actual applied opacity (e.g. "do
+                    // repeat and non-repeat past-threshold gems really start
+                    // their fade at the same opacity") instead of only the
+                    // pastThresholdOpacity helper in isolation.
+                    notes: noteMeshPool.slice(0, visibleNoteCount).map(e => ({
+                        surfaceId: e.debugSurfaceId,
+                        isRepeat: !!e.debugIsRepeat,
+                        isPastThreshold: !!e.debugIsPastThreshold,
+                        bodyOpacity: e.body.material.opacity,
+                        faceOpacity: e.face.material.opacity,
+                    })),
+                    // Flat [x, y, z, ...] vertex array of the whole-grid
+                    // tunnel guide-line geometry (see addTunnelLines) - lets
+                    // tests verify the back corners land exactly where
+                    // projectGridPoint(offset, offset, 0) puts them, the same
+                    // formula note gems spawn from.
+                    tunnelLineVertices: tunnelLinesMesh && tunnelLinesMesh.geometry && tunnelLinesMesh.geometry.attributes.position
+                        ? Array.from(tunnelLinesMesh.geometry.attributes.position.array)
+                        : null,
+                    // One entry per built label sprite (only built while
+                    // showLabels is on - see buildSurfaceGrid), with the
+                    // actual rendered text lines recovered from the canvas
+                    // 2D context createLabelSprite drew onto - lets tests
+                    // verify real (not abbreviated) piece names are used,
+                    // that multi-piece pads get one line per piece, and
+                    // that pedal/trigger surfaces get labels too.
+                    labels: labelGroup ? labelGroup.children.map(l => {
+                        const canvas = l.material && l.material.map ? l.material.map.image : null;
+                        const ctx2d = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+                        const fillCalls = ctx2d && Array.isArray(ctx2d.fillCalls) ? ctx2d.fillCalls : [];
+                        return {
+                            surfaceKey: (l.userData && l.userData.surfaceKey) || null,
+                            lines: fillCalls.map(c => c.text),
+                            // Parsed px size from each line's final `font`
+                            // string (after any width-based shrink loop) -
+                            // lets tests verify the font actually scales
+                            // down for many stacked lines instead of
+                            // pinning at a fixed floor.
+                            fontSizes: fillCalls.map(c => {
+                                const m = /(\d+)px/.exec(c.font || '');
+                                return m ? Number(m[1]) : null;
+                            }),
+                        };
+                    }) : [],
+                    labelsVisible: labelGroup ? !!labelGroup.visible : false,
                     drumTabPresent: !!(lastBundle && lastBundle.drumTab),
                     drumTabHits: hasDrumTabHitStream(lastBundle && lastBundle.drumTab) ? lastBundle.drumTab.hits.length : 0,
                     projectionSource: cachedProjectionSource,
@@ -3524,12 +3942,15 @@
             GRID_CENTER_Y,
             TUNNEL_BACK_X_OFFSET,
             TUNNEL_BACK_LIFT,
+            TUNNEL_DEPTH,
             ALL_PIECES: ALL_PIECES.slice(),
             PAD_PIECES: PAD_PIECES.slice(),
             PEDAL_PIECES: PEDAL_PIECES.slice(),
             PEDAL_SURFACES: PEDAL_SURFACES.slice(),
             TRIGGER_SURFACES: TRIGGER_SURFACES.slice(),
             PIECE_LABELS: Object.assign({}, PIECE_LABELS),
+            PIECE_FRIENDLY_LABELS: Object.assign({}, PIECE_FRIENDLY_LABELS),
+            friendlyPieceLabel,
             DEFAULT_PAD_PROFILE: clonePadProfile(DEFAULT_PAD_PROFILE),
             DEFAULT_PEDAL_PROFILE: clonePedalProfile(DEFAULT_PEDAL_PROFILE),
             DEFAULT_TRIGGER_PROFILE: cloneTriggerProfile(DEFAULT_TRIGGER_PROFILE),
@@ -3540,6 +3961,7 @@
             validatePedalProfile,
             validateTriggerProfile,
             validateMultipadProfile,
+            collectAssignedPieces,
             colorHexFromCss,
             cssColorFromHex,
             readSettings,
@@ -3554,6 +3976,7 @@
             projectionCacheMatchesSource,
             buildSurfaceLayout,
             padProfileLayoutKey,
+            profileForPadLayout,
             lowerBoundHitEvents,
             normalizeTimingStatus,
             hitVariant,
@@ -3561,6 +3984,16 @@
             groupHitEvents,
             projectDrumTab,
             projectGridPoint,
+            projectRectCorners,
+            pastThresholdOpacity,
+            NOTE_PAST_THRESHOLD_FADE_SEC,
+            NOTE_BEHIND_SEC,
+            TARGET_ZONE_FILL_OPACITY,
+            TARGET_ZONE_EDGE_OPACITY,
+            NOTE_BODY_OPACITY,
+            NOTE_FACE_OPACITY,
+            NOTE_REPEAT_BODY_OPACITY,
+            NOTE_REPEAT_FACE_OPACITY,
             liveInstanceCount() {
                 return liveInstances.size;
             },
@@ -3570,6 +4003,15 @@
     function installSettingsGlobals(target) {
         target.multipadH3dGetProfile = function () {
             return cloneMultipadProfile(readMultipadProfile());
+        };
+        // Same-window call (settings.html's inline <script> shares this
+        // global scope, not a serialized message-passing boundary), so
+        // `options.skip*` predicates pass through as real function
+        // references - callers can filter against whichever pad/pedal/
+        // trigger entry they're currently editing without settings.html
+        // maintaining its own independent copy of this walk.
+        target.multipadH3dGetAssignedPieces = function (profile, options) {
+            return collectAssignedPieces(profile, options);
         };
         target.multipadH3dSetProfile = function (raw) {
             return writeMultipadProfile(raw);
@@ -3591,14 +4033,11 @@
         target.multipadH3dGetAllPieces = function () {
             return ALL_PIECES.slice();
         };
-        target.multipadH3dGetPadPieces = function () {
-            return PAD_PIECES.slice();
-        };
-        target.multipadH3dGetPedalPieces = function () {
-            return PEDAL_PIECES.slice();
-        };
         target.multipadH3dGetPieceLabels = function () {
             return Object.assign({}, PIECE_LABELS);
+        };
+        target.multipadH3dGetPieceFriendlyLabels = function () {
+            return Object.assign({}, PIECE_FRIENDLY_LABELS);
         };
         target.multipadH3dGetPieceColors = function () {
             const out = {};
@@ -3640,4 +4079,108 @@
     installSettingsGlobals(window);
     window.feedBackViz_multipad_highway_3d = createFactory;
     window.__multipadH3dTest = createRuntimeProbeApi();
+    // ---------------------------------------------------------------------
+    // Player Controls - Target Labels Toggle
+    // ---------------------------------------------------------------------
+
+    const LABELS_BTN_ID = 'multipad-h3d-labels-toggle';
+
+    /**
+     * Resolve the v3 plugin-control slot (the "Plugins" rail popover), or
+     * null in v2 / when the host API isn't available. See
+     * docs/plugin-v3-ui.md's canonical injection pattern - v2's
+     * `#player-controls` bar is a fixed always-visible container, but v3's
+     * is a minimal auto-hiding transport with no reliable insertion anchor,
+     * so any player-controls injection must detect v3 and mount into this
+     * slot instead.
+     *
+     * @returns {Element|null}
+     */
+    function playerSlot() {
+        if (!(window.feedBack && window.feedBack.uiVersion === 'v3'
+            && window.feedBack.ui && typeof window.feedBack.ui.playerControlSlot === 'function')) {
+            return null;
+        }
+        try {
+            return window.feedBack.ui.playerControlSlot();
+        } catch (_e) {
+            // Host slot API failure - fall back to the legacy v2 bar rather
+            // than letting the exception propagate out of the caller.
+            return null;
+        }
+    }
+
+    /**
+     * Sync the injected toggle button's pressed/unpressed visual state with
+     * the current showLabels setting. Safe to call whether or not the
+     * button has been injected yet.
+     *
+     * @returns {void}
+     */
+    function updateLabelsButton() {
+        if (typeof document === 'undefined') return;
+        const btn = document.getElementById(LABELS_BTN_ID);
+        if (!btn) return;
+        const on = !!readSettings().showLabels;
+        btn.className = on
+            ? 'px-3 py-1.5 bg-accent/20 hover:bg-accent/30 border border-accent rounded-lg text-xs text-accent transition'
+            : 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-400 transition';
+        btn.setAttribute('aria-pressed', String(on));
+    }
+
+    /**
+     * Inject the "Labels" toggle button into the player controls, once per
+     * screen (guarded by element id - re-entering the player screen is a
+     * no-op if the button is already there). Mirrors the pattern used
+     * elsewhere in this app for a player-injected control (see
+     * docs/plugin-v3-ui.md): v3 mounts into the stable plugin-control slot,
+     * v2 falls back to `#player-controls`, inserting before the legacy
+     * separator/close-button anchor only in v2 (that anchor doesn't exist
+     * in the v3 transport).
+     *
+     * This single button controls visibility for every multipad target
+     * label - pads, pedal surfaces, and external triggers alike (see
+     * buildSurfaceGrid/buildSurfaceLabel in 04-renderer.js) - since they
+     * all read the same `showLabels` setting this button flips.
+     *
+     * @returns {void}
+     */
+    function injectLabelsToggleButton() {
+        if (typeof document === 'undefined') return;
+        const slot = playerSlot();
+        const controls = slot || document.getElementById('player-controls');
+        if (!controls || document.getElementById(LABELS_BTN_ID)) return;
+        const btn = document.createElement('button');
+        btn.id = LABELS_BTN_ID;
+        btn.type = 'button';
+        btn.textContent = 'Labels';
+        btn.title = 'Toggle multipad target labels';
+        btn.setAttribute('aria-label', 'Toggle multipad target labels');
+        btn.onclick = () => {
+            writeSetting('showLabels', !readSettings().showLabels);
+            updateLabelsButton();
+        };
+        const anchor = slot ? null : controls.querySelector('span.text-gray-700, button:last-child');
+        if (anchor) controls.insertBefore(btn, anchor);
+        else controls.appendChild(btn);
+        updateLabelsButton();
+    }
+
+    if (typeof window !== 'undefined' && window.feedBack && typeof window.feedBack.on === 'function') {
+        window.feedBack.on('screen:changed', (ev) => {
+            if (ev && ev.detail && ev.detail.id === 'player') injectLabelsToggleButton();
+        });
+        if (typeof document !== 'undefined' && document.querySelector
+            && (document.querySelector('.screen.active') || {}).id === 'player') {
+            injectLabelsToggleButton();
+        }
+    }
+
+    // Exposed for tests, which drive injection directly against a stubbed
+    // document/window.feedBack rather than the real screen:changed event.
+    if (createFactory.__test) {
+        createFactory.__test.injectLabelsToggleButton = injectLabelsToggleButton;
+        createFactory.__test.updateLabelsButton = updateLabelsButton;
+        createFactory.__test.LABELS_BTN_ID = LABELS_BTN_ID;
+    }
 })();

@@ -42,6 +42,55 @@
     }
 
     /**
+     * Project a rectangle's 4 corners into world space at a given travel
+     * progress, via projectGridPoint - the same single-source-of-truth
+     * formula every other on-grid position (note gems, the layout-preview
+     * outline, the tunnel guide lines) already goes through. Centralizes
+     * "corner = center point +/- half width/height, unscaled" so a second
+     * caller never has to re-derive it independently (see addTunnelLines'
+     * history: its front/back corners used to each hand-roll this).
+     *
+     * @param {number} x - Surface center X (same convention as surface.x).
+     * @param {number} y - Surface center Y (same convention as surface.y,
+     *   i.e. NOT yet offset from GRID_CENTER_Y - that conversion happens here).
+     * @param {number} w - Rect width.
+     * @param {number} h - Rect height.
+     * @param {number} progress - Travel progress passed through to projectGridPoint.
+     * @param {number} z - World-space Z shared by all 4 returned corners.
+     * @returns {Array<[number, number, number]>} Corners in TL, TR, BR, BL order.
+     */
+    function projectRectCorners(x, y, w, h, progress, z) {
+        const localOffsetY = y - GRID_CENTER_Y;
+        return [
+            [-w / 2, -h / 2],
+            [w / 2, -h / 2],
+            [w / 2, h / 2],
+            [-w / 2, h / 2],
+        ].map(([dx, dy]) => {
+            const p = projectGridPoint(x + dx, localOffsetY + dy, progress);
+            return [p.x, p.y, z];
+        });
+    }
+
+    /**
+     * Opacity of a note gem some time after it has crossed its target
+     * threshold. Ramps linearly from `baseOpacity` (whatever opacity the
+     * gem had the instant before crossing) down to 0 (fully invisible) over
+     * NOTE_PAST_THRESHOLD_FADE_SEC seconds, then stays at 0. Color is not
+     * handled here - placeNote snaps color to NOTE_PAST_THRESHOLD_COLOR
+     * instantly, independent of this fade.
+     *
+     * @param {number} baseOpacity - Opacity immediately before crossing.
+     * @param {number} secSinceCrossing - Seconds elapsed since the note's dt
+     *   crossed 0 (i.e. `-dt`); expected >= 0.
+     * @returns {number} Opacity in [0, baseOpacity].
+     */
+    function pastThresholdOpacity(baseOpacity, secSinceCrossing) {
+        const fadeOutFactor = Math.max(0, 1 - secSinceCrossing / NOTE_PAST_THRESHOLD_FADE_SEC);
+        return baseOpacity * fadeOutFactor;
+    }
+
+    /**
      * Build one renderer instance for the host setRenderer lifecycle.
      *
      * The renderer keeps all Three.js state instance-local. Stable
@@ -71,6 +120,7 @@
         let noteFaceGeometry = null;
         let noteMaterials = new Map();
         let noteMeshPool = [];
+        let tunnelLinesMesh = null;
         let layoutPreviewGroup = null;
         let layoutPreviewGroupFrameGeometry = null;
         let layoutPreviewGroupMaterial = null;
@@ -637,6 +687,18 @@
             const noteMaterialChanged = !activeSettings || next.glowStrength !== activeSettings.glowStrength;
             const cinematicChanged = !activeSettings || next.cinematicLighting !== activeSettings.cinematicLighting;
             const backgroundChanged = !activeSettings || next.backgroundStyle !== activeSettings.backgroundStyle || next.backgroundIntensity !== activeSettings.backgroundIntensity;
+            // Label sprites are only built when showLabels is on (see
+            // buildSurfaceGrid) - skipping the canvas/texture work entirely
+            // while labels are off, rather than always building them and
+            // only hiding via labelGroup.visible. So flipping the setting
+            // off -> on needs to force one real surface-grid rebuild to
+            // actually create them: nulling activeSurfaceLayoutKey makes
+            // the very next buildSurfaceGrid call (reached via the normal
+            // settingsVersion-bump -> projection-cache-miss path every
+            // writeSetting call already triggers) miss its own cache check
+            // instead of early-returning with no labels built.
+            const labelsJustEnabled = !!next.showLabels && !(activeSettings && activeSettings.showLabels);
+            if (labelsJustEnabled) activeSurfaceLayoutKey = null;
             activeSettings = next;
             if (labelGroup) labelGroup.visible = !!activeSettings.showLabels;
             if (camera) applyCameraSettings();
@@ -663,11 +725,11 @@
             if (surfaceGroup) {
                 for (const surface of Object.values(surfaces)) {
                     if (!surface.active) continue;
-                    if (surface.kind === 'pad' && surface.baseEmissiveColor != null) {
-                        applyPadTargetStyle(surface, surface.baseEmissiveColor);
+                    if (TARGET_ZONE_PLANE_KINDS.has(surface.kind) && surface.baseEmissiveColor != null) {
+                        applyTargetZoneStyle(surface, surface.baseEmissiveColor);
                         continue;
                     }
-                    if (surface.material && surface.material.color && surface.kind !== 'external-trigger-center' && surface.kind !== 'external-trigger-edge') {
+                    if (surface.material && surface.material.color && surface.kind !== 'external-trigger-center' && surface.kind !== 'external-trigger-edge' && surface.kind !== 'external-trigger-rim') {
                         surface.material.color.setHex(theme.pad);
                     }
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(theme.edge);
@@ -684,29 +746,56 @@
         }
 
         /**
-         * Create a texture-backed sprite label for a pad surface.
+         * Create a texture-backed sprite label from one or more lines of
+         * text, stacked top-to-bottom and centered as a block. Font size
+         * shrinks both as more lines are stacked and per-line when a single
+         * line (e.g. a long full piece name like "Snare (cross-stick)")
+         * would otherwise overflow the canvas, instead of ever hard-cutting
+         * text to a fixed character count.
          *
-         * @param {string} text - Short label text.
+         * @param {string|Array<string>} lines - Text to render; a bare
+         *   string is treated as a single line. Falsy/empty entries are
+         *   dropped.
          * @param {number} width - Sprite width in world units.
          * @param {number} height - Sprite height in world units.
-         * @returns {object|null} Three.js sprite, or null when canvas is unavailable.
+         * @returns {object|null} Three.js sprite, or null when canvas is
+         *   unavailable or there is no non-empty text to render.
          */
-        function createLabelSprite(text, width, height) {
+        function createLabelSprite(lines, width, height) {
             if (typeof document === 'undefined' || !document.createElement) return null;
+            const items = (Array.isArray(lines) ? lines : [lines]).map(l => String(l || '')).filter(Boolean);
+            if (!items.length) return null;
             const c = document.createElement('canvas');
-            c.width = 256;
-            c.height = 96;
+            c.width = 384;
+            c.height = 160;
             const ctx = c.getContext('2d');
             if (!ctx) return null;
             ctx.clearRect(0, 0, c.width, c.height);
-            ctx.font = '700 36px system-ui, -apple-system, Segoe UI, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.lineWidth = 6;
+            ctx.lineWidth = 5;
             ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
             ctx.fillStyle = SCENE_COLORS.text;
-            ctx.strokeText(String(text || '').slice(0, 8), c.width / 2, c.height / 2);
-            ctx.fillText(String(text || '').slice(0, 8), c.width / 2, c.height / 2);
+            const maxTextWidth = c.width - 24;
+            const rowHeight = c.height / items.length;
+            // Scaled directly off the available row height (not a fixed
+            // floor) so a pad/trigger with many stacked pieces keeps
+            // shrinking instead of overlapping once row height drops below
+            // what a fixed minimum font would need - the per-line
+            // width-based shrink loop below still applies on top of this.
+            const baseFontPx = Math.max(8, Math.min(34, Math.floor(rowHeight * 0.72)));
+            const fontAt = px => `700 ${px}px system-ui, -apple-system, Segoe UI, sans-serif`;
+            items.forEach((text, i) => {
+                let fontPx = baseFontPx;
+                ctx.font = fontAt(fontPx);
+                while (fontPx > 11 && ctx.measureText(text).width > maxTextWidth) {
+                    fontPx -= 2;
+                    ctx.font = fontAt(fontPx);
+                }
+                const y = rowHeight * i + rowHeight / 2;
+                ctx.strokeText(text, c.width / 2, y);
+                ctx.fillText(text, c.width / 2, y);
+            });
             const texture = new T.CanvasTexture(c);
             const material = new T.SpriteMaterial({
                 map: texture,
@@ -719,7 +808,62 @@
         }
 
         /**
+         * Reasonable label box (world units) for a non-pad target surface,
+         * derived from its own geometry - wide/short rectangles for
+         * pedal/trigger outline bars, radius-scaled for circular/ring
+         * external trigger zones. Pads use their own fixed, separately
+         * tuned PAD_W/PAD_H-based box (see buildSurfaceLabel) since that
+         * size was already tuned for the single-line abbreviation label
+         * and is kept unchanged for the common case.
+         *
+         * @param {object} desc - Surface descriptor from buildSurfaceLayout.
+         * @returns {{w: number, h: number}}
+         */
+        function labelBoxForSurface(desc) {
+            if (desc.shape === 'circle' || desc.shape === 'ring') {
+                const r = desc.radius || desc.w / 2;
+                return { w: Math.min(2.2, Math.max(0.5, r * 1.7)), h: Math.min(0.42, Math.max(0.16, r * 0.9)) };
+            }
+            return { w: Math.min(2.2, Math.max(0.5, desc.w * 0.7)), h: Math.min(0.42, Math.max(0.16, desc.h * 0.6)) };
+        }
+
+        /**
+         * Build the label sprite for one surface descriptor, if any - full
+         * friendly piece names (see PIECE_FRIENDLY_LABELS/friendlyPieceLabel
+         * in 01-constants.js), one per line, matching how pieces are shown
+         * in the settings panel rather than the short PIECE_LABELS
+         * abbreviations that aren't used anywhere else. A pad always gets a
+         * label (an em dash placeholder when unassigned, matching the
+         * existing "Unassigned" chip convention in settings.html); pedal
+         * and trigger surfaces only get one when at least one piece is
+         * actually mapped there.
+         *
+         * @param {object} desc - Surface descriptor from buildSurfaceLayout.
+         * @returns {object|null} Three.js sprite, or null.
+         */
+        function buildSurfaceLabel(desc) {
+            const pieces = desc.pieces || [];
+            if (desc.kind === 'pad') {
+                const lines = pieces.length ? pieces.map(friendlyPieceLabel) : ['—'];
+                return createLabelSprite(lines, PAD_W * 0.58, PAD_H * 0.26);
+            }
+            if (!pieces.length) return null;
+            const box = labelBoxForSurface(desc);
+            return createLabelSprite(pieces.map(friendlyPieceLabel), box.w, box.h);
+        }
+
+        /**
          * Add receding tunnel guide lines behind one pad surface.
+         *
+         * Corners come from projectRectCorners (front at progress=1, the
+         * real position; back at progress=0, the same far/vanishing point
+         * note gems spawn from) instead of a hand-rolled formula, so these
+         * lines are guaranteed to converge exactly like the note gems
+         * traveling through them - a previous version scaled each back
+         * corner's offset from center by a fixed TUNNEL_BACK_SCALE, which
+         * doesn't match how projectGridPoint (the single source of truth
+         * for every other on-grid position) converges, and the lines
+         * visibly didn't line up with the gems.
          *
          * @param {number} x - Surface center X.
          * @param {number} y - Surface center Y.
@@ -729,20 +873,8 @@
          * @returns {void}
          */
         function addTunnelLines(x, y, w, h, group) {
-            const front = [
-                [x - w / 2, y - h / 2, 0.015],
-                [x + w / 2, y - h / 2, 0.015],
-                [x + w / 2, y + h / 2, 0.015],
-                [x - w / 2, y + h / 2, 0.015],
-            ];
-            const backX = TUNNEL_BACK_X_OFFSET + x * TUNNEL_BACK_SCALE;
-            const backY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
-            const back = [
-                [backX - w * TUNNEL_BACK_SCALE / 2, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX + w * TUNNEL_BACK_SCALE / 2, backY - h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX + w * TUNNEL_BACK_SCALE / 2, backY + h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-                [backX - w * TUNNEL_BACK_SCALE / 2, backY + h * TUNNEL_BACK_SCALE / 2, -TUNNEL_DEPTH],
-            ];
+            const front = projectRectCorners(x, y, w, h, 1, 0.015);
+            const back = projectRectCorners(x, y, w, h, 0, -TUNNEL_DEPTH);
             const vertices = [];
             for (let i = 0; i < 4; i++) {
                 const next = (i + 1) % 4;
@@ -762,6 +894,10 @@
             // instead of z-fighting/poking through them.
             lines.renderOrder = 1;
             group.add(lines);
+            // Debug-only - read by __probe()'s `tunnelLineVertices` so tests
+            // can verify the guide lines' back corners actually match
+            // projectGridPoint instead of a hand-rolled formula.
+            tunnelLinesMesh = lines;
         }
 
         /**
@@ -871,7 +1007,7 @@
         }
 
         /**
-         * Add one thick ring render surface for external trigger edge zones.
+         * Add one thick ring render surface for external trigger edge/rim zones.
          *
          * @param {string} key - Surface id.
          * @param {number} x - Surface center X.
@@ -917,26 +1053,36 @@
             };
         }
 
+        // Plane-shaped (addPlaneSurface) target-zone kinds that should read
+        // as a colored outline with a faint fill once assigned - pads,
+        // pedal outline bars, and outline-left/outline-right trigger
+        // surfaces. Circle/ring external-trigger zones are deliberately
+        // excluded (see TARGET_ZONE_FILL_OPACITY's comment).
+        const TARGET_ZONE_PLANE_KINDS = new Set(['pad', 'pedal-outline', 'trigger-outline']);
+
         /**
-         * Make a regular pad target read as a colored outline with a faint fill.
+         * Make an assigned plane-shaped target zone (pad, pedal outline, or
+         * trigger outline) read as a colored outline with a faint fill,
+         * instead of the neutral theme-colored fill/edge addPlaneSurface
+         * builds by default.
          *
          * @param {object} surface - Surface descriptor returned by addPlaneSurface.
-         * @param {number} colorHex - Pad route color.
+         * @param {number} colorHex - Routed target color.
          * @returns {void}
          */
-        function applyPadTargetStyle(surface, colorHex) {
+        function applyTargetZoneStyle(surface, colorHex) {
             if (!surface) return;
             if (surface.material) {
                 if (surface.material.color) surface.material.color.setHex(colorHex);
                 if (surface.material.emissive) surface.material.emissive.setHex(colorHex);
                 surface.material.emissiveIntensity = 0.04;
-                surface.material.opacity = PAD_TARGET_FILL_OPACITY;
+                surface.material.opacity = TARGET_ZONE_FILL_OPACITY;
             }
             if (surface.edgeMaterial) {
                 if (surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(colorHex);
-                surface.edgeMaterial.opacity = PAD_TARGET_EDGE_OPACITY;
+                surface.edgeMaterial.opacity = TARGET_ZONE_EDGE_OPACITY;
             }
-            surface.baseOpacity = PAD_TARGET_FILL_OPACITY;
+            surface.baseOpacity = TARGET_ZONE_FILL_OPACITY;
             surface.baseEmissiveColor = colorHex;
             surface.baseEmissiveIntensity = 0.04;
         }
@@ -996,20 +1142,26 @@
                     if (surface.material && surface.material.emissive) surface.material.emissive.setHex(SCENE_COLORS.inactiveSurface);
                     if (surface.edgeMaterial && surface.edgeMaterial.color) surface.edgeMaterial.color.setHex(SCENE_COLORS.inactiveEdge);
                     if (surface.edgeMaterial) surface.edgeMaterial.opacity = 0.35;
-                } else if (desc.kind === 'pad') {
-                    applyPadTargetStyle(surface, desc.color);
+                } else if (TARGET_ZONE_PLANE_KINDS.has(desc.kind)) {
+                    applyTargetZoneStyle(surface, desc.color);
                 }
                 if (surface.material && surface.material.emissive && typeof surface.material.emissive.getHex === 'function') {
                     surface.baseEmissiveColor = surface.material.emissive.getHex();
                 }
                 surface.kind = desc.kind;
                 surfaces[surface.key] = surface;
-                if (desc.kind === 'pad') {
-                    const label = activeSettings.showLabels ? createLabelSprite(desc.pad.label || '—', PAD_W * 0.58, PAD_H * 0.26) : null;
-                    if (label) {
-                        label.position.set(desc.x, desc.y, 0.08);
-                        labelGroup.add(label);
-                    }
+                // Skipped entirely (no canvas/texture work) when labels are
+                // off, rather than always built and only hidden via
+                // labelGroup.visible - updateSettingsFromStorage forces one
+                // rebuild when showLabels flips off -> on, so toggling live
+                // still works without ever leaving labelGroup empty.
+                const label = activeSettings.showLabels ? buildSurfaceLabel(desc) : null;
+                if (label) {
+                    label.position.set(desc.x, desc.y, 0.08);
+                    // Debug-only - read by __probe()'s `labels` so tests can
+                    // correlate a label sprite back to the surface it belongs to.
+                    label.userData.surfaceKey = desc.key;
+                    labelGroup.add(label);
                 }
             }
         }
@@ -1481,21 +1633,30 @@
             // pedal/trigger gems always render at full opacity regardless of
             // their own repeatedFromPreviousGroup value.
             const isRepeat = event.type === 'pad' && !!event.repeatedFromPreviousGroup;
+            // Debug-only fields read by __probe()'s `notes` snapshot - not
+            // used by any rendering path. Lets tests correlate a pooled
+            // mesh back to the event that placed it this frame.
+            note.debugSurfaceId = event.surfaceId;
+            note.debugIsRepeat = isRepeat;
+            note.debugIsPastThreshold = isPastThreshold;
             note.group.position.set(x, y, z);
             note.body.scale.set(w, bodyH, 0.11);
             note.face.scale.set(w, bodyH, 1);
             if (isPastThreshold) {
-                // Snap straight to the dim, near-invisible state the instant
-                // a note crosses the threshold - no gradual fade down from a
-                // brighter starting point. A fade window here meant the gem
-                // stayed noticeably visible (and, combined with continuing
-                // to grow via perspective, noticeably large) for a
-                // perceptible stretch right after crossing.
-                note.body.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
-                note.face.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
+                // Color already snapped to gray above (isPastThreshold's
+                // color branch) - no gradual color fade. Opacity ramps
+                // linearly to fully invisible over NOTE_PAST_THRESHOLD_FADE_SEC
+                // (see pastThresholdOpacity), always starting from the
+                // dimmer repeat-gem level regardless of isRepeat - even a
+                // fresh gem's own brighter NOTE_*_OPACITY read as too
+                // bright/lingering the instant after crossing. dt is <= 0
+                // here, so -dt is seconds elapsed since crossing.
+                const secSinceCrossing = -dt;
+                note.body.material.opacity = pastThresholdOpacity(NOTE_REPEAT_BODY_OPACITY * fadeInFactor, secSinceCrossing);
+                note.face.material.opacity = pastThresholdOpacity(NOTE_REPEAT_FACE_OPACITY * fadeInFactor, secSinceCrossing);
             } else {
-                note.body.material.opacity = (isRepeat ? 0.24 : 0.82) * fadeInFactor;
-                note.face.material.opacity = (isRepeat ? 0.2 : 0.98) * fadeInFactor;
+                note.body.material.opacity = (isRepeat ? NOTE_REPEAT_BODY_OPACITY : NOTE_BODY_OPACITY) * fadeInFactor;
+                note.face.material.opacity = (isRepeat ? NOTE_REPEAT_FACE_OPACITY : NOTE_FACE_OPACITY) * fadeInFactor;
                 if (!isRepeat && surface.kind === 'pad') {
                     placeLayoutPreview(z, scaleProgress, fadeInFactor);
                 }
@@ -1660,6 +1821,7 @@
             highwayGroup = null;
             surfaceGroup = null;
             notesGroup = null;
+            tunnelLinesMesh = null;
             layoutPreviewGroup = null;
             layoutPreviewGroupFrameGeometry = null;
             layoutPreviewGroupMaterial = null;
@@ -1794,6 +1956,65 @@
                     height: lastHeight,
                     hasBundle: !!lastBundle,
                     surfaces: Object.keys(surfaces).length,
+                    // Per-surface fill/edge color+opacity snapshot, keyed the
+                    // same as the internal `surfaces` map - lets tests verify
+                    // the actual applied Three.js material state (e.g. "does
+                    // an assigned pedal surface really get a colored edge")
+                    // rather than only the pre-render layout descriptors.
+                    surfaceStyles: Object.fromEntries(Object.entries(surfaces).map(([key, s]) => [key, {
+                        kind: s.kind,
+                        active: !!s.active,
+                        fillColor: s.material && s.material.color && typeof s.material.color.getHex === 'function' ? s.material.color.getHex() : null,
+                        fillOpacity: s.material ? s.material.opacity : null,
+                        edgeColor: s.edgeMaterial && s.edgeMaterial.color && typeof s.edgeMaterial.color.getHex === 'function' ? s.edgeMaterial.color.getHex() : null,
+                        edgeOpacity: s.edgeMaterial ? s.edgeMaterial.opacity : null,
+                    }])),
+                    // This frame's visible note gems, in placement order -
+                    // lets tests verify actual applied opacity (e.g. "do
+                    // repeat and non-repeat past-threshold gems really start
+                    // their fade at the same opacity") instead of only the
+                    // pastThresholdOpacity helper in isolation.
+                    notes: noteMeshPool.slice(0, visibleNoteCount).map(e => ({
+                        surfaceId: e.debugSurfaceId,
+                        isRepeat: !!e.debugIsRepeat,
+                        isPastThreshold: !!e.debugIsPastThreshold,
+                        bodyOpacity: e.body.material.opacity,
+                        faceOpacity: e.face.material.opacity,
+                    })),
+                    // Flat [x, y, z, ...] vertex array of the whole-grid
+                    // tunnel guide-line geometry (see addTunnelLines) - lets
+                    // tests verify the back corners land exactly where
+                    // projectGridPoint(offset, offset, 0) puts them, the same
+                    // formula note gems spawn from.
+                    tunnelLineVertices: tunnelLinesMesh && tunnelLinesMesh.geometry && tunnelLinesMesh.geometry.attributes.position
+                        ? Array.from(tunnelLinesMesh.geometry.attributes.position.array)
+                        : null,
+                    // One entry per built label sprite (only built while
+                    // showLabels is on - see buildSurfaceGrid), with the
+                    // actual rendered text lines recovered from the canvas
+                    // 2D context createLabelSprite drew onto - lets tests
+                    // verify real (not abbreviated) piece names are used,
+                    // that multi-piece pads get one line per piece, and
+                    // that pedal/trigger surfaces get labels too.
+                    labels: labelGroup ? labelGroup.children.map(l => {
+                        const canvas = l.material && l.material.map ? l.material.map.image : null;
+                        const ctx2d = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+                        const fillCalls = ctx2d && Array.isArray(ctx2d.fillCalls) ? ctx2d.fillCalls : [];
+                        return {
+                            surfaceKey: (l.userData && l.userData.surfaceKey) || null,
+                            lines: fillCalls.map(c => c.text),
+                            // Parsed px size from each line's final `font`
+                            // string (after any width-based shrink loop) -
+                            // lets tests verify the font actually scales
+                            // down for many stacked lines instead of
+                            // pinning at a fixed floor.
+                            fontSizes: fillCalls.map(c => {
+                                const m = /(\d+)px/.exec(c.font || '');
+                                return m ? Number(m[1]) : null;
+                            }),
+                        };
+                    }) : [],
+                    labelsVisible: labelGroup ? !!labelGroup.visible : false,
                     drumTabPresent: !!(lastBundle && lastBundle.drumTab),
                     drumTabHits: hasDrumTabHitStream(lastBundle && lastBundle.drumTab) ? lastBundle.drumTab.hits.length : 0,
                     projectionSource: cachedProjectionSource,

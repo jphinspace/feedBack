@@ -81,6 +81,13 @@
      * records the fallback `routedPiece`, so rendering can keep labels/variants
      * honest while sharing a pad for pieces such as open/closed hi-hat.
      *
+     * Iterates ALL_PIECES rather than PAD_PIECES so a piece like kick or
+     * hh_pedal - now assignable to a pad, not just a pedal - actually gets
+     * routed when a profile does exactly that; PAD_PIECES/PIECE_FALLBACKS
+     * still only ever cover non-pedal pieces, so this doesn't change
+     * fallback behavior for kick/hh_pedal (neither appears as a fallback
+     * key or value), only makes their own direct pad assignment work.
+     *
      * @param {object} padProfile - Validated or raw pad profile.
      * @returns {object} Map of piece id to { routeType, pad, routedPiece }.
      */
@@ -94,7 +101,7 @@
         }
 
         const routed = Object.create(null);
-        for (const piece of PAD_PIECES) {
+        for (const piece of ALL_PIECES) {
             if (direct[piece]) {
                 routed[piece] = Object.assign({ routedPiece: piece }, direct[piece]);
                 continue;

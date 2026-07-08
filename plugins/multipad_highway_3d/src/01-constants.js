@@ -70,8 +70,8 @@
     /** MVP external-trigger surface tokens for off-grid pad inputs. */
     const TRIGGER_SURFACES = Object.freeze([
         'outline-left', 'outline-right',
-        'external-left-center', 'external-left-edge',
-        'external-right-center', 'external-right-edge',
+        'external-left-center', 'external-left-edge', 'external-left-rim',
+        'external-right-center', 'external-right-edge', 'external-right-rim',
     ]);
     const TRIGGER_SURFACE_SET = new Set(TRIGGER_SURFACES);
     /** Short display labels kept compatible with the existing drum highway. */
@@ -95,6 +95,48 @@
         ride_bell: 'BLL',
         bell: 'BEL',
     };
+    /**
+     * Full human-readable piece names - the single source of truth for
+     * every "how does this piece read to a person" display in the plugin.
+     * Renderer label sprites and the settings panel's piece dropdowns/chips
+     * both read from this (settings.html fetches it via
+     * multipadH3dGetPieceFriendlyLabels) instead of each keeping its own
+     * copy, so the two can't drift out of sync. Distinct from PIECE_LABELS
+     * above, which are short abbreviations (SNR, HHc, ...) kept for the
+     * legacy drum_highway_3d-style short tags used elsewhere (event.label,
+     * pedal pulse text) - on-highway target labels use this full form.
+     */
+    const PIECE_FRIENDLY_LABELS = Object.freeze({
+        kick: 'Kick',
+        snare: 'Snare',
+        snare_xstick: 'Snare (cross-stick)',
+        hh_closed: 'Hi-hat (closed)',
+        hh_open: 'Hi-hat (open)',
+        hh_pedal: 'Hi-hat (pedal)',
+        tom_hi: 'Tom - high',
+        tom_mid: 'Tom - mid',
+        tom_low: 'Tom - low',
+        tom_floor: 'Floor tom',
+        stack: 'Stack',
+        crash_l: 'Crash (left)',
+        crash_r: 'Crash (right)',
+        splash: 'Splash',
+        china: 'China',
+        ride: 'Ride',
+        ride_bell: 'Ride bell',
+        bell: 'Bell',
+    });
+    /**
+     * Resolve a piece id to its full display name, falling back to the raw
+     * id for a future/unknown piece (matches settings.html's own `friendly()`
+     * fallback so the two never disagree on unknown input).
+     *
+     * @param {string} piece - Canonical drum piece id.
+     * @returns {string}
+     */
+    function friendlyPieceLabel(piece) {
+        return PIECE_FRIENDLY_LABELS[piece] || piece;
+    }
     /**
      * MVP routing fallbacks for pieces that do not have their own built-in pad.
      * These adapt the drum highway's kit fallback idea to a pad grid without
@@ -336,11 +378,13 @@
     const PAD_GAP = 0.16;
     const EXTERNAL_TRIGGER_PAD_DIAMETER = PAD_H;
     const EXTERNAL_TRIGGER_PAD_EDGE_WIDTH = 0.14;
+    // Third (outermost) trigger zone - a ring drawn around the edge ring,
+    // same thickness as the edge ring for a consistent concentric look.
+    const EXTERNAL_TRIGGER_PAD_RIM_WIDTH = 0.14;
     const GRID_CENTER_Y = 1.22;
     const PEDAL_OUTLINE_H = 0.11;
     const FLOOR_Y = -0.72;
     const TUNNEL_DEPTH = 22;
-    const TUNNEL_BACK_SCALE = 0.12;
     const TUNNEL_BACK_LIFT = 5.0;
     const TUNNEL_BACK_X_OFFSET = 14.0;
     const HIGHWAY_PITCH = 0;
@@ -348,8 +392,15 @@
     const HIGHWAY_Z_OFFSET = 0;
     const CAMERA_PAN_X = 1.35;
     const CAMERA_PAN_Y = 0.56;
-    const PAD_TARGET_FILL_OPACITY = 0.1;
-    const PAD_TARGET_EDGE_OPACITY = 0.9;
+    // Shared "colored outline with a faint fill" look for every plane-shaped
+    // assigned target zone - pads, and the pedal/trigger-outline surfaces
+    // that use the same rectangular addPlaneSurface geometry (see
+    // applyTargetZoneStyle in 04-renderer.js). Circular/ring external
+    // trigger zones don't need this: addCircleSurface/addRingSurface
+    // already fill with the routed color directly instead of a neutral
+    // theme.pad base, so they read correctly without a separate pass.
+    const TARGET_ZONE_FILL_OPACITY = 0.1;
+    const TARGET_ZONE_EDGE_OPACITY = 0.9;
     // Peak opacity of the whole-hit-group layout-preview outline, reached
     // while it's still far away. It fades linearly to fully 0 as the note
     // approaches the target (see placeLayoutPreview), rather than staying at
@@ -400,7 +451,11 @@
     // How long a note keeps rendering/moving past the hit plane before it's
     // culled. No hit detection exists yet (post-MVP), so every note passes
     // through unhandled - it keeps a brief bit of motion instead of freezing.
-    const NOTE_BEHIND_SEC = 0.18;
+    // Must be at least NOTE_PAST_THRESHOLD_FADE_SEC so the past-threshold
+    // opacity fade (see placeNote's isPastThreshold branch) always finishes
+    // reaching zero before the note is culled, instead of the mesh
+    // disappearing mid-fade.
+    const NOTE_BEHIND_SEC = 0.25;
     // How long a note takes to fade in from fully transparent after
     // spawning. Gems are drawn at their real target size from the moment
     // they spawn (no separate world-space size-growth curve - see
@@ -408,18 +463,31 @@
     // fade a gem would otherwise pop in abruptly at full opacity and full
     // size the instant it enters the lookahead window.
     const NOTE_SPAWN_FADE_SEC = 0.25;
-    // Gray + near-fully-transparent the instant a note passes its target -
-    // no fade in from a brighter starting point (see placeNote's
-    // isPastThreshold branch) - signaling "unhandled" without implying a
-    // miss judgement, since no hit detection exists yet. More transparent
-    // than the repeat-note gems (0.24 body / 0.2 face - see placeNote). A
-    // white threshold-crossing flash used to play here too, but even at a
-    // short duration it's normal- (not additive-) blended toward white, so
-    // it read as a lingering bright moment right when gems are supposed to
-    // go dim immediately - removed (see placeNote's flash suppression under
-    // isPastThreshold).
+    // Normal (non-repeat) gem opacity - body is the extruded block, face is
+    // the flat front label surface (see placeNote/acquireNoteMesh).
+    const NOTE_BODY_OPACITY = 0.82;
+    const NOTE_FACE_OPACITY = 0.98;
+    // Repeat-note gems (same surface hit again within the immediately
+    // previous hit group - see placeNote's isRepeat) render dimmer than a
+    // fresh gem, as a pad-grid-pattern cue (see PLANNING.md).
+    const NOTE_REPEAT_BODY_OPACITY = 0.24;
+    const NOTE_REPEAT_FACE_OPACITY = 0.2;
+    // Gray the instant a note passes its target - no fade in from a
+    // brighter starting point (see placeNote's isPastThreshold branch) -
+    // signaling "unhandled" without implying a miss judgement, since no hit
+    // detection exists yet. A white threshold-crossing flash used to play
+    // here too, but even at a short duration it's normal- (not additive-)
+    // blended toward white, so it read as a lingering bright moment right
+    // when gems are supposed to go dim immediately - removed (see
+    // placeNote's flash suppression under isPastThreshold).
     const NOTE_PAST_THRESHOLD_COLOR = 0x808080;
-    const NOTE_PAST_THRESHOLD_OPACITY = 0.05;
+    // Past-threshold gems always start their fade at the dimmer
+    // NOTE_REPEAT_*_OPACITY level - even a fresh (non-repeat) gem's own
+    // brighter NOTE_*_OPACITY read as too bright/lingering the instant
+    // after crossing - then ramp linearly down to fully invisible over this
+    // many seconds (see placeNote's isPastThreshold branch) - the rate is
+    // deliberately linear for now; may become eased later.
+    const NOTE_PAST_THRESHOLD_FADE_SEC = 0.25;
     const SPARK_COUNT = 192;
     const KICK_SHAKE_DECAY = 14;
     const KICK_SHAKE_MAGNITUDE = 0.09;
