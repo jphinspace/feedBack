@@ -16,7 +16,7 @@
      * @returns {Element|null}
      */
     function playerSlot() {
-        if (!(window.feedBack && window.feedBack.uiVersion === 'v3'
+        if (typeof window === 'undefined' || !(window.feedBack && window.feedBack.uiVersion === 'v3'
             && window.feedBack.ui && typeof window.feedBack.ui.playerControlSlot === 'function')) {
             return null;
         }
