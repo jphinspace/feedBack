@@ -2551,6 +2551,8 @@
                 y,
                 w: diameter,
                 h: diameter,
+                shape: 'circle',
+                radius,
                 mesh,
                 material: mat,
                 edgeMaterial: edgeMat,
@@ -2597,6 +2599,8 @@
                 y,
                 w: diameter,
                 h: diameter,
+                shape: 'ring',
+                radius: outerRadius,
                 mesh,
                 material: mat,
                 baseOpacity: opacity,
@@ -2632,10 +2636,19 @@
         /**
          * Rebuild the stable pad grid, labels, tunnels, and outline surfaces.
          *
+         * Called on every drum-tab projection cache miss, which includes
+         * each streamed hit chunk arriving from the host (see
+         * `projectionForBundle`) - not just real profile changes. The
+         * layout key depends only on the pad/pedal/trigger profiles, so
+         * skip the dispose/rebuild of Three.js geometry, materials, and
+         * label sprites when it hasn't actually changed.
+         *
          * @param {object} profile - Validated pad profile.
          * @returns {void}
          */
         function buildSurfaceGrid(profile, pedalProfile, triggerProfile) {
+            const layout = buildSurfaceLayout(profile, pedalProfile, triggerProfile);
+            if (surfaceGroup && layout.layoutKey === activeSurfaceLayoutKey) return;
             if (surfaceGroup) {
                 disposeObjectTree(surfaceGroup);
                 removeFromParent(surfaceGroup);
@@ -2650,7 +2663,6 @@
             (highwayGroup || scene).add(surfaceGroup);
             (highwayGroup || scene).add(labelGroup);
             surfaces = Object.create(null);
-            const layout = buildSurfaceLayout(profile, pedalProfile, triggerProfile);
             activeSurfaceLayoutKey = layout.layoutKey;
             // Pad positions/count may have changed - the cached whole-group
             // outline geometry (see placeLayoutPreview) is stale.
