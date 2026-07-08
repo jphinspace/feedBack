@@ -355,6 +355,10 @@
     // approaches the target (see placeLayoutPreview), rather than staying at
     // a flat opacity all the way to the threshold.
     const LAYOUT_PREVIEW_GROUP_OPACITY = 0.45;
+    // Extra margin added around the pad grid's own tight bounding box when
+    // sizing the layout-preview outline, so the frame reads as a border
+    // around the hit group rather than touching the outermost gems.
+    const LAYOUT_PREVIEW_GROUP_MARGIN = 0.14;
     // NOTE_SPEED is the purely spatial knob: how many world units of depth
     // correspond to one second of chart-time gap between notes. Raising it
     // (from an original 7.25) spreads notes that are close together in time
@@ -367,20 +371,29 @@
     // against that same computed depth (not the fixed TUNNEL_DEPTH used only
     // for the cosmetic guide-line wireframe/camera look-at target), so notes
     // always spawn at exactly progress=0 regardless of tempo.
-    const NOTE_SPEED = 11.0;
+    const NOTE_SPEED = 12.0;
     const NOTE_GEM_DEPTH = 0.1;
     const NOTE_GEM_CORNER_RADIUS = 0.18;
+    // Layout-preview outline's own corner radius - fixed, at individual-gem
+    // scale, rather than proportional to the whole grid's (much larger)
+    // width/height. buildFrameGeometry's default (Math.min(w, h) *
+    // NOTE_GEM_CORNER_RADIUS, using the outline's own full outer w/h) gave
+    // the outline a corner radius several times larger than any single
+    // gem's own rounding - the rounded corner then cut inward *more* than
+    // LAYOUT_PREVIEW_GROUP_MARGIN pushed the box outward, letting a corner
+    // gem touch or overlap the outline despite the straight edges having a
+    // clean gap.
+    const LAYOUT_PREVIEW_GROUP_CORNER_RADIUS = NOTE_GEM_CORNER_RADIUS * Math.min(PAD_W, PAD_H);
     const NOTE_GEM_CURVE_SEGMENTS = 8;
     const NOTE_GEM_BODY_Z_OFFSET = 0.08;
     const NOTE_GEM_FACE_Z_OFFSET = NOTE_GEM_BODY_Z_OFFSET + NOTE_GEM_DEPTH / 2 + 0.008;
-    const NOTE_GEM_FLASH_Z_OFFSET = NOTE_GEM_FACE_Z_OFFSET + 0.01;
     // Reaction time is expressed in beats, not a flat seconds value, so it
     // scales with the chart's own tempo (updateNoteAheadFromTempo derives
-    // the current seconds-per-beat from bundle.beats each frame). 2.24
-    // rather than 2.25 so a hit group sent right at the 2-and-a-quarter-beat mark
-    // reads as "about 2-and-a-quarter beats out" without ever double-showing an edge-case
-    // group that's still resolving right at the boundary.
-    const NOTE_AHEAD_BEATS = 2.24;
+    // the current seconds-per-beat from bundle.beats each frame). A value a
+    // hair off a "nice" fraction of a beat is deliberate - it keeps a hit
+    // group sent right at that fraction's own boundary from ever
+    // double-showing as still-resolving right at the edge.
+    const NOTE_AHEAD_BEATS = 1.99;
     // Used when the chart has no usable beat-grid data (fewer than 2 beats,
     // e.g. no song_timeline). Matches the flat value this replaced.
     const NOTE_AHEAD_FALLBACK_SEC = 2.0;
@@ -388,6 +401,13 @@
     // culled. No hit detection exists yet (post-MVP), so every note passes
     // through unhandled - it keeps a brief bit of motion instead of freezing.
     const NOTE_BEHIND_SEC = 0.18;
+    // How long a note takes to fade in from fully transparent after
+    // spawning. Gems are drawn at their real target size from the moment
+    // they spawn (no separate world-space size-growth curve - see
+    // placeNote's comment on why that curve was removed), so without this
+    // fade a gem would otherwise pop in abruptly at full opacity and full
+    // size the instant it enters the lookahead window.
+    const NOTE_SPAWN_FADE_SEC = 0.25;
     // Gray + near-fully-transparent the instant a note passes its target -
     // no fade in from a brighter starting point (see placeNote's
     // isPastThreshold branch) - signaling "unhandled" without implying a
@@ -501,6 +521,61 @@
     }
 
     /**
+     * Resolve a profile-owned CSS color field: the raw value verbatim
+     * (lowercased) when it's a valid `#rrggbb` string, otherwise a CSS
+     * string built from `fallbackHex`.
+     *
+     * Shared by `validatePadProfile`, `validatePedalProfile`, and
+     * `validateTriggerProfile` - each still picks its own `fallbackHex`
+     * (their fallback semantics genuinely differ: pad/trigger fall back to
+     * their first assigned piece's palette color with different defaults
+     * when inactive, pedal always has a piece to fall back to), but the
+     * "is this a valid hex string, otherwise format the fallback" check no
+     * longer needs its own copy at each call site.
+     *
+     * @param {*} rawColor - Candidate `#rrggbb` string from profile data.
+     * @param {number} fallbackHex - Numeric color used when rawColor is invalid.
+     * @returns {string} Lowercase `#rrggbb` CSS color.
+     */
+    function sanitizeProfileColor(rawColor, fallbackHex) {
+        return colorHexFromCss(rawColor) !== null ? rawColor.toLowerCase() : cssColorFromHex(fallbackHex);
+    }
+
+    /**
+     * Default display label for a pad/pedal/trigger from its first assigned
+     * piece - the canonical short label when known, otherwise the piece id
+     * uppercased. Empty when no piece is assigned yet (inactive surface).
+     *
+     * @param {Array<string>} pieces - A pad/pedal/trigger's assigned pieces.
+     * @returns {string}
+     */
+    function defaultLabelForPieces(pieces) {
+        return pieces[0] ? (PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()) : '';
+    }
+
+    /**
+     * Binary search a sorted array for the first entry at or after `minTime`,
+     * reading the time from `field`. Shared by `lowerBoundHitEvents` (hit
+     * events, keyed by `.t`) and `lowerBoundTimeField` (beats/anchors/
+     * sections, keyed by `.time`) so the two callers can't drift apart.
+     *
+     * @param {Array<object>} entries - Sorted entries.
+     * @param {number} minTime - Earliest time to find.
+     * @param {string} field - Property name holding each entry's time.
+     * @returns {number} Start index into `entries`.
+     */
+    function lowerBoundByField(entries, minTime, field) {
+        let lo = 0;
+        let hi = Array.isArray(entries) ? entries.length : 0;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (entries[mid][field] < minTime) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    /**
      * Find the first sorted hit event whose time is at or after `minTime`.
      *
      * @param {Array<object>} hitEvents - Sorted projected hit events.
@@ -508,35 +583,20 @@
      * @returns {number} Start index into `hitEvents`.
      */
     function lowerBoundHitEvents(hitEvents, minTime) {
-        let lo = 0;
-        let hi = Array.isArray(hitEvents) ? hitEvents.length : 0;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (hitEvents[mid].t < minTime) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
+        return lowerBoundByField(hitEvents, minTime, 't');
     }
 
     /**
      * Binary search a `.time`-keyed array (e.g. the host bundle's `beats`)
-     * for the first entry at or after `minTime`. Same lower-bound semantics
-     * as `lowerBoundHitEvents`, just for the `.time` field beats/anchors/
-     * sections use instead of `.t`.
+     * for the first entry at or after `minTime` - the `.time` field
+     * beats/anchors/sections use instead of `.t`.
      *
      * @param {Array<object>} entries - Sorted entries with a `.time` field.
      * @param {number} minTime - Earliest time to find.
      * @returns {number} Start index into `entries`.
      */
     function lowerBoundTimeField(entries, minTime) {
-        let lo = 0;
-        let hi = Array.isArray(entries) ? entries.length : 0;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (entries[mid].time < minTime) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
+        return lowerBoundByField(entries, minTime, 'time');
     }
 
     function normalizeTimingStatus(value) {

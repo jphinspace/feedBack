@@ -7,6 +7,9 @@
             pluginId: PLUGIN_ID,
             contextType: CONTEXT_TYPE,
             matchesArrangement,
+            GRID_CENTER_Y,
+            TUNNEL_BACK_X_OFFSET,
+            TUNNEL_BACK_LIFT,
             ALL_PIECES: ALL_PIECES.slice(),
             PAD_PIECES: PAD_PIECES.slice(),
             PEDAL_PIECES: PEDAL_PIECES.slice(),
@@ -43,6 +46,7 @@
             normalizeHit,
             groupHitEvents,
             projectDrumTab,
+            projectGridPoint,
             liveInstanceCount() {
                 return liveInstances.size;
             },

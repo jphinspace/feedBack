@@ -310,6 +310,11 @@
             pieceToPedal,
             pieceToTrigger
         );
+        function recordEvent(event) {
+            hitEvents.push(event);
+            stats.projectedHits++;
+            incrementCount(stats.projectedPieces, event.piece);
+        }
 
         for (const rawHit of hits) {
             const hit = normalizeHit(rawHit);
@@ -325,7 +330,7 @@
             stats.normalizedHits++;
             const pedal = pieceToPedal[hit.piece];
             if (pedal) {
-                hitEvents.push({
+                recordEvent({
                     type: 'pedal',
                     pedalId: pedal.id,
                     surfaceId: pedal.surface,
@@ -340,13 +345,11 @@
                     open: false,
                     timingStatus: hit.timingStatus,
                 });
-                stats.projectedHits++;
-                incrementCount(stats.projectedPieces, hit.piece);
                 continue;
             }
             const trigger = pieceToTrigger[hit.piece];
             if (trigger) {
-                hitEvents.push({
+                recordEvent({
                     type: 'trigger',
                     triggerId: trigger.id,
                     surfaceId: trigger.surface,
@@ -361,8 +364,6 @@
                     open: hit.open,
                     timingStatus: hit.timingStatus,
                 });
-                stats.projectedHits++;
-                incrementCount(stats.projectedPieces, hit.piece);
                 continue;
             }
             const route = pieceToPad[hit.piece];
@@ -370,7 +371,7 @@
                 incrementCount(stats.unroutedPieces, hit.piece);
                 continue;
             }
-            hitEvents.push({
+            recordEvent({
                 type: 'pad',
                 padId: route.pad.id,
                 surfaceId: 'pad:' + route.pad.id,
@@ -386,8 +387,6 @@
                 open: hit.open,
                 timingStatus: hit.timingStatus,
             });
-            stats.projectedHits++;
-            incrementCount(stats.projectedPieces, hit.piece);
         }
 
         hitEvents.sort((a, b) => a.t - b.t || a.piece.localeCompare(b.piece));

@@ -255,14 +255,15 @@
             }
             occupied.add(coordKey);
             usedPadIds.add(padId);
-            const color = typeof pad.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(pad.color)
-                ? pad.color.toLowerCase()
-                : (pieces[0] ? ('#' + (PIECE_COLORS[pieces[0]] || SCENE_COLORS.surface).toString(16).padStart(6, '0')) : '#2d3748');
+            const color = sanitizeProfileColor(
+                pad.color,
+                pieces[0] ? (PIECE_COLORS[pieces[0]] || SCENE_COLORS.surface) : SCENE_COLORS.inactiveSurface
+            );
             pads.push({
                 id: padId,
                 row,
                 col,
-                label: sanitizeProfileDisplayText(pad.label, pieces[0] ? (PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()) : ''),
+                label: sanitizeProfileDisplayText(pad.label, defaultLabelForPieces(pieces)),
                 pieces,
                 color,
             });
@@ -325,13 +326,11 @@
             const surface = PEDAL_SURFACE_SET.has(requestedSurface)
                 ? requestedSurface
                 : (defaultPiece === 'hh_pedal' ? 'outline-top' : 'outline-bottom');
-            const color = typeof pedal.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(pedal.color)
-                ? pedal.color.toLowerCase()
-                : ('#' + (PIECE_COLORS[defaultPiece] || SCENE_COLORS.inactiveSurface).toString(16).padStart(6, '0'));
+            const color = sanitizeProfileColor(pedal.color, PIECE_COLORS[defaultPiece] || SCENE_COLORS.inactiveSurface);
             pedals.push({
                 id: sanitizeProfileId(pedal.id, 'pedal-' + (i + 1)),
                 surface,
-                label: sanitizeProfileDisplayText(pedal.label, pieces[0] ? (PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()) : ''),
+                label: sanitizeProfileDisplayText(pedal.label, defaultLabelForPieces(pieces)),
                 pieces,
                 color,
             });
@@ -387,13 +386,14 @@
             }
             occupiedSurfaces.add(surface);
             usedTriggerIds.add(triggerId);
-            const color = typeof trigger.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(trigger.color)
-                ? trigger.color.toLowerCase()
-                : ('#' + (pieces[0] ? (PIECE_COLORS[pieces[0]] || 0xa78bfa) : SCENE_COLORS.inactiveSurface).toString(16).padStart(6, '0'));
+            const color = sanitizeProfileColor(
+                trigger.color,
+                pieces[0] ? (PIECE_COLORS[pieces[0]] || 0xa78bfa) : SCENE_COLORS.inactiveSurface
+            );
             triggers.push({
                 id: triggerId,
                 surface,
-                label: sanitizeProfileDisplayText(trigger.label, pieces[0] ? (PIECE_LABELS[pieces[0]] || pieces[0].toUpperCase()) : ''),
+                label: sanitizeProfileDisplayText(trigger.label, defaultLabelForPieces(pieces)),
                 pieces,
                 color,
             });
@@ -480,10 +480,7 @@
         const triggerProfileId = readStorageValue(LS_KEYS.triggerProfileId);
         if (triggerProfileId === DEFAULT_TRIGGER_PROFILE.id) settings.triggerProfileId = triggerProfileId;
 
-        const showLabels = readStorageValue(LS_KEYS.showLabels);
-        if (showLabels === '1' || showLabels === 'true') settings.showLabels = true;
-        else if (showLabels === '0' || showLabels === 'false') settings.showLabels = false;
-        for (const key of ['timingColors', 'hitSparks', 'cinematicLighting']) {
+        for (const key of ['showLabels', 'timingColors', 'hitSparks', 'cinematicLighting']) {
             const raw = readStorageValue(LS_KEYS[key]);
             if (raw === '1' || raw === 'true') settings[key] = true;
             else if (raw === '0' || raw === 'false') settings[key] = false;

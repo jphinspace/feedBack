@@ -3,6 +3,45 @@
     // ---------------------------------------------------------------------
 
     /**
+     * Project a point at a fixed local offset from the pad grid's own
+     * center into tunnel/world space at a given travel progress.
+     *
+     * The grid's own center converges from a compressed point near
+     * `TUNNEL_BACK_X_OFFSET`/`TUNNEL_BACK_LIFT` (progress=0, still far
+     * away) to its real position (progress=1, at the target plane).
+     * `localOffsetX`/`localOffsetY` - a fixed offset from that center, e.g.
+     * a pad's own position within the grid - is added UNSCALED at every
+     * progress value, rather than being separately compressed toward the
+     * vanishing point on its own.
+     *
+     * This is the single source of truth: both note gems (`placeNote`) and
+     * the whole-hit-group outline (`placeLayoutPreview`) call this same
+     * function for their own offset (a pad's own `(surface.x, surface.y -
+     * GRID_CENTER_Y)`, or `(0, 0)` for the outline's own center) rather
+     * than each hand-rolling its own version of this formula. Letting the
+     * two drift apart is exactly what caused three separate bugs across
+     * this file's history: gems and the outline growing along different
+     * size curves, gem size compounding differently than gem spacing under
+     * camera perspective, and (most recently) gem position compressing
+     * toward its own point while the outline's did not - putting a
+     * just-spawned gem near the *center* of an already-correctly-shaped
+     * outline instead of at its real proportional spot within it. With one
+     * shared formula, that class of divergence is no longer something to
+     * remember to keep in sync - there is nothing else it could drift from.
+     *
+     * @param {number} localOffsetX - Fixed X offset from the grid's own center.
+     * @param {number} localOffsetY - Fixed Y offset from the grid's own center.
+     * @param {number} progress - Travel progress; 0 = just spawned (far
+     *   away, compressed toward the vanishing point), 1 = at the target plane.
+     * @returns {{x: number, y: number}} World-space position.
+     */
+    function projectGridPoint(localOffsetX, localOffsetY, progress) {
+        const centerX = TUNNEL_BACK_X_OFFSET * (1 - progress);
+        const centerY = GRID_CENTER_Y + TUNNEL_BACK_LIFT * (1 - progress);
+        return { x: centerX + localOffsetX, y: centerY + localOffsetY };
+    }
+
+    /**
      * Build one renderer instance for the host setRenderer lifecycle.
      *
      * The renderer keeps all Three.js state instance-local. Stable
@@ -37,8 +76,6 @@
         let layoutPreviewGroupMaterial = null;
         let layoutPreviewGroupMeshPool = [];
         let visibleLayoutPreviewGroupCount = 0;
-        let activeGridW = 0;
-        let activeGridH = 0;
         let cachedDrumTab = null;
         let cachedDrumHitCount = -1;
         let cachedProjectionSource = '';
@@ -85,6 +122,26 @@
             disposed.add(mat);
             if (mat.map && typeof mat.map.dispose === 'function') mat.map.dispose();
             if (typeof mat.dispose === 'function') mat.dispose();
+        }
+
+        /**
+         * Dispose every cached note template material (and its gradient
+         * texture, via `disposeMaterial`) and reset the cache.
+         *
+         * These templates are only ever `.clone()`d onto pooled note meshes -
+         * the templates themselves never enter the scene graph, so
+         * `disposeObjectTree(scene)` never reaches them. Callers that drop
+         * `noteMaterials` (settings changes that invalidate cached materials,
+         * and teardown) must go through this instead of reassigning
+         * `noteMaterials = new Map()` directly, or the old templates and
+         * their canvas gradient textures leak silently.
+         *
+         * @returns {void}
+         */
+        function disposeNoteMaterials() {
+            const disposed = new Set();
+            for (const mat of noteMaterials.values()) disposeMaterial(mat, disposed);
+            noteMaterials = new Map();
         }
 
         /**
@@ -163,23 +220,14 @@
                 const group = new T.Group();
                 const body = new T.Mesh(noteGeometry, material.clone());
                 const face = new T.Mesh(noteFaceGeometry, faceMaterial.clone());
-                const flash = new T.Mesh(noteGeometry, new T.MeshBasicMaterial({
-                    color: 0xffffff,
-                    transparent: true,
-                    opacity: 0,
-                    depthWrite: false,
-                }));
                 body.position.z = NOTE_GEM_BODY_Z_OFFSET;
                 face.position.z = NOTE_GEM_FACE_Z_OFFSET;
-                flash.position.z = NOTE_GEM_FLASH_Z_OFFSET;
                 body.renderOrder = 10;
                 face.renderOrder = 10;
-                flash.renderOrder = 11;
-                flash.visible = false;
                 body.userData.sourceMaterial = material;
                 face.userData.sourceMaterial = faceMaterial;
-                group.add(body, face, flash);
-                entry = { group, body, face, flash };
+                group.add(body, face);
+                entry = { group, body, face };
                 noteMeshPool.push(entry);
                 notesGroup.add(group);
             } else {
@@ -190,10 +238,6 @@
                 if (entry.face.userData.sourceMaterial !== faceMaterial) {
                     entry.face.material.copy(faceMaterial);
                     entry.face.userData.sourceMaterial = faceMaterial;
-                }
-                if (entry.flash && entry.flash.material) {
-                    entry.flash.material.opacity = 0;
-                    entry.flash.visible = false;
                 }
             }
             entry.group.visible = true;
@@ -325,10 +369,10 @@
          * @param {number} w - Outer width.
          * @param {number} h - Outer height.
          * @param {number} thickness - Frame thickness in the same units as w/h.
+         * @param {number} radius - Outer corner radius, in the same units as w/h.
          * @returns {object} Three.js ShapeGeometry.
          */
-        function buildFrameGeometry(w, h, thickness) {
-            const radius = Math.min(w, h) * NOTE_GEM_CORNER_RADIUS;
+        function buildFrameGeometry(w, h, thickness, radius) {
             const shape = makeRoundedRectShape(w, h, radius);
             const innerW = Math.max(0.001, w - thickness * 2);
             const innerH = Math.max(0.001, h - thickness * 2);
@@ -339,15 +383,21 @@
 
         /**
          * Build the whole-hit-group outer outline frame geometry, spanning
-         * the current pad grid's full bounding box. Rebuilt whenever the pad
-         * profile changes (grid dimensions can change).
+         * the current pad grid's full bounding box plus a small margin so
+         * the frame doesn't touch the outermost gems. Rebuilt whenever the
+         * pad profile changes (grid dimensions can change).
          *
          * @param {number} gridW - Grid bounding box width.
          * @param {number} gridH - Grid bounding box height.
          * @returns {object} Three.js ShapeGeometry.
          */
         function buildLayoutPreviewGroupFrameGeometry(gridW, gridH) {
-            return buildFrameGeometry(gridW, gridH, 0.07);
+            return buildFrameGeometry(
+                gridW + LAYOUT_PREVIEW_GROUP_MARGIN * 2,
+                gridH + LAYOUT_PREVIEW_GROUP_MARGIN * 2,
+                0.07,
+                LAYOUT_PREVIEW_GROUP_CORNER_RADIUS
+            );
         }
 
         /**
@@ -592,12 +642,7 @@
             if (camera) applyCameraSettings();
             if (cinematicChanged) applyCinematicLighting();
             if (backgroundChanged) buildBackground();
-            if (noteMaterialChanged) {
-                for (const mat of noteMaterials.values()) {
-                    if (mat && typeof mat.dispose === 'function') mat.dispose();
-                }
-                noteMaterials = new Map();
-            }
+            if (noteMaterialChanged) disposeNoteMaterials();
             if (activeThemeId !== activeSettings.sceneTheme) {
                 applySceneTheme();
             }
@@ -915,8 +960,6 @@
             surfaces = Object.create(null);
             const layout = buildSurfaceLayout(profile, pedalProfile, triggerProfile);
             activeSurfaceLayoutKey = layout.layoutKey;
-            activeGridW = layout.gridW;
-            activeGridH = layout.gridH;
             // Pad positions/count may have changed - the cached whole-group
             // outline geometry (see placeLayoutPreview) is stale.
             if (layoutPreviewGroupFrameGeometry) layoutPreviewGroupFrameGeometry.dispose();
@@ -1325,53 +1368,30 @@
          * traveling alongside an approaching note, so the hit group reads as
          * one unit as it moves down the highway. Uses the exact same
          * back-projection transform as the note's own position (anchored at
-         * the grid's own center), so it grows into alignment with the real
-         * grid by the threshold, in step with the note gem itself.
+         * the grid's own center), so its center travels in step with the
+         * note gem itself. Drawn at full (unscaled) size throughout - see
+         * the "no separate size-shrink" comment in placeNote for why - so
+         * only camera perspective, not an extra world-space scale curve,
+         * makes it read as smaller while still far away.
          *
          * @param {number} z - Current depth, matching the note's own z.
          * @param {number} scaleProgress - Current clamped travel progress, matching the note's own.
-         * @param {number} noteScale - Current eased scale, matching the note's own.
+         * @param {number} fadeInFactor - Spawn fade-in multiplier in [0, 1], matching the note's own.
          * @returns {void}
          */
-        function placeLayoutPreview(z, scaleProgress) {
+        function placeLayoutPreview(z, scaleProgress, fadeInFactor) {
             if (!layoutPreviewGroup || !layoutPreviewGroupFrameGeometry) return;
-            // Bound the outline by projecting its own left/right/top/bottom
-            // edges through the exact same per-point back-projection used for
-            // individual pad positions, rather than scaling one shape by the
-            // note's own eased noteScale curve. noteScale (cubic-eased,
-            // starting at 43-68% even at progress=0) describes how a single
-            // note gem grows - it doesn't describe how far apart independent
-            // pad trajectories have spread at a given progress, so scaling
-            // the whole-grid shape by it left the outline mismatched against
-            // where the actual notes were before they neared the threshold.
-            // Each edge here uses the same linear back-to-front interpolation
-            // as a pad's own x/y, so at every progress value the outline's
-            // edges exactly bound every pad's own trajectory in between.
-            const halfW = activeGridW / 2;
-            const halfH = activeGridH / 2;
-            const leftX = -halfW;
-            const rightX = halfW;
-            const topY = GRID_CENTER_Y + halfH;
-            const bottomY = GRID_CENTER_Y - halfH;
-            const backLeftX = TUNNEL_BACK_X_OFFSET + leftX * TUNNEL_BACK_SCALE;
-            const backRightX = TUNNEL_BACK_X_OFFSET + rightX * TUNNEL_BACK_SCALE;
-            const backTopY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (topY - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
-            const backBottomY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (bottomY - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
-            const curLeftX = backLeftX + (leftX - backLeftX) * scaleProgress;
-            const curRightX = backRightX + (rightX - backRightX) * scaleProgress;
-            const curTopY = backTopY + (topY - backTopY) * scaleProgress;
-            const curBottomY = backBottomY + (bottomY - backBottomY) * scaleProgress;
+            // The outline's own local offset from the grid center is
+            // (0, 0) - it IS the grid center, at full (unscaled) size.
+            const center = projectGridPoint(0, 0, scaleProgress);
             const group = acquireLayoutPreviewGroupMesh();
-            group.mesh.position.set((curLeftX + curRightX) / 2, (curTopY + curBottomY) / 2, z);
-            group.mesh.scale.set(
-                (curRightX - curLeftX) / activeGridW,
-                (curTopY - curBottomY) / activeGridH,
-                1
-            );
+            group.mesh.position.set(center.x, center.y, z);
+            group.mesh.scale.set(1, 1, 1);
             // Fade out as the note approaches - fully transparent by the
             // time it reaches the target, rather than staying at a flat
-            // opacity all the way in.
-            group.mesh.material.opacity = LAYOUT_PREVIEW_GROUP_OPACITY * (1 - scaleProgress);
+            // opacity all the way in - and fade in from spawn (see
+            // placeNote) rather than popping in at full opacity.
+            group.mesh.material.opacity = LAYOUT_PREVIEW_GROUP_OPACITY * (1 - scaleProgress) * fadeInFactor;
         }
 
         /**
@@ -1403,22 +1423,48 @@
             const rawProgress = (z + activeNoteSpawnDepth) / activeNoteSpawnDepth;
             const positionProgress = Math.max(0, rawProgress);
             const scaleProgress = Math.min(1, positionProgress);
-            const backX = TUNNEL_BACK_X_OFFSET + surface.x * TUNNEL_BACK_SCALE;
-            const backY = GRID_CENTER_Y + TUNNEL_BACK_LIFT + (surface.y - GRID_CENTER_Y) * TUNNEL_BACK_SCALE;
-            const x = backX + (surface.x - backX) * positionProgress;
-            const y = backY + (surface.y - backY) * positionProgress;
+            // Same projectGridPoint the outline uses for its own center
+            // (see that function's comment) - a pad's own offset from the
+            // grid's center (surface.x, surface.y - GRID_CENTER_Y) is real
+            // and constant, never separately compressed toward the
+            // vanishing point.
+            const point = projectGridPoint(surface.x, surface.y - GRID_CENTER_Y, positionProgress);
+            const x = point.x;
+            const y = point.y;
             const isPastThreshold = dt <= 0;
             const color = isPastThreshold ? NOTE_PAST_THRESHOLD_COLOR : eventColorForEvent(event);
             const note = acquireNoteMesh(
                 getNoteMaterial(color, 'normal'),
                 getNoteMaterial(color, 'front')
             );
-            const startScale = event.type === 'pad' ? 0.43 : 0.68;
-            const easedProgress = scaleProgress * scaleProgress * scaleProgress;
-            const noteScale = startScale + (1 - startScale) * easedProgress;
-            const w = surface.w * noteScale;
-            const h = surface.h * noteScale;
+            // No separate size-shrink curve: gems are always drawn at their
+            // real target dimensions (surface.w/h), for every progress value
+            // - not scaled up from a smaller spawn size. Two earlier passes
+            // tried a world-space size curve tied to progress (first an
+            // eased 43-68%-start curve, then TUNNEL_BACK_SCALE-based, then a
+            // cubic-eased version of that) to keep distant gems from
+            // overlapping their neighbors or the layout-preview outline -
+            // but every version of "shrink size AND shrink position both as
+            // functions of progress" compounds with the camera's own real
+            // perspective divide, which already does the "looks smaller
+            // when farther away" job on its own. Removing the extra curve
+            // simplifies the highway back to one source of size truth (the
+            // pad's real dimensions) and lets ordinary perspective account
+            // for distance - at the cost of legitimately dense, evenly-timed
+            // hit streams still crowding near spawn, same as any highway.
+            const w = surface.w;
+            const h = surface.h;
             const bodyH = Math.max(0.045, h);
+            // With no size ramp to visually mark "just spawned," gems now
+            // fade in from fully transparent instead - elapsedSinceSpawn is
+            // how long this note has been visible (activeNoteAheadSec is
+            // this frame's tempo-derived total flight time, dt counts down
+            // from it to 0), clamped into a 0..1 ramp over
+            // NOTE_SPAWN_FADE_SEC. Past-threshold notes are always long past
+            // this window (dt <= 0 implies elapsed >= activeNoteAheadSec >>
+            // NOTE_SPAWN_FADE_SEC), so it's a no-op there.
+            const elapsedSinceSpawn = activeNoteAheadSec - dt;
+            const fadeInFactor = Math.min(1, Math.max(0, elapsedSinceSpawn / NOTE_SPAWN_FADE_SEC));
             // Repeat dimming is a pad-grid-pattern cue (see PLANNING.md) -
             // pedal/trigger gems always render at full opacity regardless of
             // their own repeatedFromPreviousGroup value.
@@ -1433,23 +1479,15 @@
                 // stayed noticeably visible (and, combined with continuing
                 // to grow via perspective, noticeably large) for a
                 // perceptible stretch right after crossing.
-                note.body.material.opacity = NOTE_PAST_THRESHOLD_OPACITY;
-                note.face.material.opacity = NOTE_PAST_THRESHOLD_OPACITY;
+                note.body.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
+                note.face.material.opacity = NOTE_PAST_THRESHOLD_OPACITY * fadeInFactor;
             } else {
-                note.body.material.opacity = isRepeat ? 0.24 : 0.82;
-                note.face.material.opacity = isRepeat ? 0.2 : 0.98;
+                note.body.material.opacity = (isRepeat ? 0.24 : 0.82) * fadeInFactor;
+                note.face.material.opacity = (isRepeat ? 0.2 : 0.98) * fadeInFactor;
                 if (!isRepeat && surface.kind === 'pad') {
-                    placeLayoutPreview(z, scaleProgress);
+                    placeLayoutPreview(z, scaleProgress, fadeInFactor);
                 }
             }
-            // The white threshold-crossing flash (removed) only ever played
-            // post-threshold and was normal- (not additive-) blended toward
-            // white, so it was the main contributor to gems still reading as
-            // bright right after crossing - exactly what isPastThreshold
-            // above now snaps straight to dim/transparent for instead.
-            note.flash.scale.copy(note.body.scale);
-            note.flash.visible = false;
-            note.flash.material.opacity = 0;
         }
 
         /**
@@ -1596,7 +1634,12 @@
             clearTransientNotes();
             if (scene) disposeObjectTree(scene);
             if (renderer) renderer.dispose();
-            noteMaterials = new Map();
+            disposeNoteMaterials();
+            // Never entered the scene graph (only its .clone()s did), so
+            // disposeObjectTree(scene) above never reaches it either.
+            if (layoutPreviewGroupMaterial && typeof layoutPreviewGroupMaterial.dispose === 'function') {
+                layoutPreviewGroupMaterial.dispose();
+            }
             canvas = null;
             lastBundle = null;
             scene = null;
@@ -1610,8 +1653,6 @@
             layoutPreviewGroupMaterial = null;
             layoutPreviewGroupMeshPool = [];
             visibleLayoutPreviewGroupCount = 0;
-            activeGridW = 0;
-            activeGridH = 0;
             labelGroup = null;
             surfaces = Object.create(null);
             noteGeometry = null;
@@ -1672,16 +1713,24 @@
                             powerPreference: 'high-performance',
                         });
                         renderer.setClearColor(SCENE_COLORS.clear, 1);
+                        initScene();
+                        applySize(canvas.clientWidth || canvas.width || lastWidth, canvas.clientHeight || canvas.height || lastHeight);
                     } catch (err) {
-                        console.error('[Multipad-Hwy3D] WebGL2 init failed:', err);
+                        // initScene used to run outside this try/catch, so an
+                        // exception there (bad pad-profile geometry, etc.)
+                        // fell through to the outer .catch below, which
+                        // teardown()s silently with no console output - a
+                        // real scene-build bug then looked exactly like "the
+                        // canvas never rendered anything," with no error
+                        // logged anywhere to point at why.
+                        console.error('[Multipad-Hwy3D] scene init failed:', err);
                         teardown();
                         return;
                     }
-                    initScene();
-                    applySize(canvas.clientWidth || canvas.width || lastWidth, canvas.clientHeight || canvas.height || lastHeight);
                     ready = true;
                     instance.draw(lastBundle);
-                }).catch(() => {
+                }).catch(err => {
+                    console.error('[Multipad-Hwy3D] Three.js load failed:', err);
                     if (!destroyed) teardown();
                 });
             },

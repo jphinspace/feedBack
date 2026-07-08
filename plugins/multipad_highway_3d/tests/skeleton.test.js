@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createThreeStub } = require('./three-stub');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const PLUGIN_DIR = path.join(ROOT, 'plugins', 'multipad_highway_3d');
@@ -13,6 +14,12 @@ function loadFactoryHarness(options = {}) {
     };
     if (options.localStorage) window.localStorage = options.localStorage;
     if (options.standardDrumHighway) window.feedBackViz_drum_highway_3d = function () {};
+    // Always available so a test can drive a real init()/draw() cycle by
+    // passing a fake canvas - see "renderer builds a real scene..." below.
+    // Harmless for tests that never call init() with a non-null canvas
+    // (init() returns before ever touching Three for a null canvas, which
+    // is what the plain lifecycle test below exercises).
+    window.__multipadH3dThree = createThreeStub();
     window.window = window;
     window.globalThis = window;
     const context = vm.createContext(window);
@@ -23,6 +30,22 @@ function loadFactoryHarness(options = {}) {
 
 function loadFactory() {
     return loadFactoryHarness();
+}
+
+/**
+ * A canvas stand-in with just the fields `applySize()`/`init()` read.
+ * Three itself is faked (see three-stub.js), so nothing ever calls
+ * `.getContext()` on this - the real WebGLRenderer would, ours doesn't.
+ */
+function fakeCanvas(width = 800, height = 600) {
+    return { clientWidth: width, clientHeight: height, width, height };
+}
+
+/** Flush both the microtask queue and one macrotask turn - enough for
+ * init()'s `loadThree().then(...)` chain (already-resolved promise, fully
+ * synchronous callback body) to finish before assertions run. */
+function flushAsync() {
+    return new Promise(resolve => setTimeout(resolve, 0));
 }
 
 function loadFactoryWithStorage(entries = {}) {
@@ -117,6 +140,81 @@ test('renderer lifecycle exposes WebGL state and tears down idempotently without
     assert.equal(factory.__test.liveInstanceCount(), 0);
 });
 
+test('renderer builds a real scene and draws a synthetic drum chart against a fake canvas without throwing', async () => {
+    // Unlike the lifecycle test above (init(null, ...) - returns before
+    // ever touching Three), this exercises the actual scene-build and
+    // per-frame render path: initScene(), buildSurfaceGrid(), placeNote(),
+    // placeLayoutPreview(), and settings-driven material disposal. This is
+    // the path a bug like a ReferenceError inside placeNote (an undefined
+    // constant it references) lives on - previously that class of bug was
+    // only ever caught by noticing a blank/broken screenshot.
+    const factory = loadFactory();
+    const renderer = factory();
+    renderer.init(fakeCanvas(), { currentTime: 0 });
+    await flushAsync();
+
+    const readyProbe = renderer.__probe();
+    assert.equal(readyProbe.initialized, true);
+    assert.equal(readyProbe.ready, true);
+    assert.ok(readyProbe.surfaces > 0, 'surface grid should have built pad/pedal/trigger surfaces');
+
+    const drumTab = {
+        hits: [
+            { t: 0, p: 'snare' },
+            { t: 0.25, p: 'kick' },
+            { t: 0.5, p: 'hh_closed' },
+        ],
+    };
+    assert.doesNotThrow(() => {
+        renderer.draw({ currentTime: 0.4, drumTab });
+    });
+    const drawnProbe = renderer.__probe();
+    assert.equal(drawnProbe.drumTabPresent, true);
+    assert.ok(drawnProbe.projectedHits > 0, 'drum hits should have projected onto pad/pedal surfaces');
+    assert.ok(drawnProbe.visibleNotes > 0, 'at least one note should be visible this frame');
+
+    // A settings change mid-session invalidates and disposes cached note
+    // materials (see disposeNoteMaterials in 04-renderer.js) - exercise
+    // that path too, not just the initial build.
+    factory.__test.writeSetting('glowStrength', 0.9);
+    assert.doesNotThrow(() => {
+        renderer.draw({ currentTime: 0.45, drumTab });
+    });
+
+    assert.doesNotThrow(() => renderer.destroy());
+    assert.equal(factory.__test.liveInstanceCount(), 0);
+});
+
+test('renderer survives a destroy/re-init cycle on the same instance (song-switch lifecycle)', async () => {
+    // playSong() does stop() -> init() on the SAME renderer instance to
+    // reuse the canvas for the next song (see the setRenderer contract in
+    // CLAUDE.md) - so init() must tolerate running again after destroy(),
+    // including rebuilding anything teardown() disposed (note materials,
+    // the layout-preview outline material, pooled meshes).
+    const factory = loadFactory();
+    const renderer = factory();
+
+    renderer.init(fakeCanvas(), { currentTime: 0 });
+    await flushAsync();
+    assert.equal(renderer.__probe().ready, true);
+    renderer.draw({ currentTime: 0, drumTab: { hits: [{ t: 0, p: 'snare' }] } });
+
+    renderer.destroy();
+    assert.equal(renderer.__probe().ready, false);
+
+    assert.doesNotThrow(() => renderer.init(fakeCanvas(), { currentTime: 0 }));
+    await flushAsync();
+    const probe = renderer.__probe();
+    assert.equal(probe.ready, true);
+    assert.ok(probe.surfaces > 0);
+    assert.doesNotThrow(() => {
+        renderer.draw({ currentTime: 0.1, drumTab: { hits: [{ t: 0, p: 'kick' }] } });
+    });
+
+    renderer.destroy();
+    assert.equal(factory.__test.liveInstanceCount(), 0);
+});
+
 test('pad profile validation accepts m x n layouts and strips invalid entries', () => {
     const t = loadFactory().__test;
     const profile = t.validatePadProfile({
@@ -144,7 +242,16 @@ test('pad profile validation accepts m x n layouts and strips invalid entries', 
     assert.deepEqual(plain(profile.pads[1].pieces), ['tom_hi']);
     assert.deepEqual(plain(profile.pads.map(p => p.id)), ['1', 'dup-pad']);
     assert.equal(profile.fallbacks.tom_low, 'tom_hi');
-    assert.equal({}.polluted, undefined);
+    // fallbacks injects "__proto__":"snare" via JSON.parse - JSON.parse
+    // assigns __proto__ as a plain own key (it never triggers the
+    // Object.prototype.__proto__ setter), and the piece-set filter would
+    // reject it as an unknown piece regardless, so this can't actually
+    // pollute anything either way. Assert the two real defenses directly
+    // instead: the returned fallbacks map is genuinely null-prototype
+    // (matches validatePadProfile's `Object.create(null)`), and
+    // "__proto__" never became a real member of it.
+    assert.equal(Object.getPrototypeOf(profile.fallbacks), null);
+    assert.equal(Object.prototype.hasOwnProperty.call(profile.fallbacks, '__proto__'), false);
 });
 
 test('default pad profile routes every known pad piece somewhere', () => {
@@ -802,4 +909,64 @@ test('profile API exposes phase five layout choices and persists saved defaults'
     assert.deepEqual(plain(saved.pedalProfile.pedals.map(pedal => pedal.pieces)), [['kick'], ['kick']]);
     assert.deepEqual(plain(saved.triggerProfile.triggers.map(trigger => trigger.pieces)), [['tom_hi'], []]);
     assert.deepEqual(plain(saved.triggerProfile.triggerSlots), [{ id: 'trigger-1', zones: 2 }]);
+});
+
+test('projectGridPoint converges the grid center toward the vanishing point while keeping local offsets unscaled', () => {
+    const t = loadFactory().__test;
+
+    // progress=1 (at the target plane): the grid center is exactly its
+    // real position, and a local offset lands at its exact real spot -
+    // this is the "arrived" case both a pad and the outline must hit
+    // exactly, with no residual compression.
+    assert.deepEqual(plain(t.projectGridPoint(0, 0, 1)), { x: 0, y: t.GRID_CENTER_Y });
+    assert.deepEqual(plain(t.projectGridPoint(1.34, 0.94, 1)), { x: 1.34, y: t.GRID_CENTER_Y + 0.94 });
+
+    // progress=0 (just spawned): the grid center sits at the compressed
+    // back/vanishing point - but a local offset is still added in FULL,
+    // not scaled down. This is the exact invariant the "gem sat near the
+    // outline's center instead of its own proportional spot" bug broke:
+    // offsets must never shrink toward zero at low progress.
+    assert.deepEqual(plain(t.projectGridPoint(0, 0, 0)), { x: t.TUNNEL_BACK_X_OFFSET, y: t.GRID_CENTER_Y + t.TUNNEL_BACK_LIFT });
+    assert.deepEqual(plain(t.projectGridPoint(1.34, 0.94, 0)), { x: t.TUNNEL_BACK_X_OFFSET + 1.34, y: t.GRID_CENTER_Y + t.TUNNEL_BACK_LIFT + 0.94 });
+
+    // At any progress, two points that share the same offset stay exactly
+    // that offset apart - the center converges, the spread around it
+    // doesn't, at every point along the path, not just the endpoints.
+    for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
+        const a = t.projectGridPoint(0, 0, progress);
+        const b = t.projectGridPoint(1.34, 0.94, progress);
+        assert.ok(Math.abs((b.x - a.x) - 1.34) < 1e-9, `progress=${progress}`);
+        assert.ok(Math.abs((b.y - a.y) - 0.94) < 1e-9, `progress=${progress}`);
+    }
+});
+
+test('every default-profile pad stays within the layout-preview outline at every travel progress', () => {
+    // Regression guard for the class of bug this session hit three times:
+    // note-gem placement and the whole-hit-group outline each hand-rolling
+    // their own version of the same tunnel-projection formula, and drifting
+    // out of sync. Both now route through the single projectGridPoint
+    // helper, so this should hold by construction - this test exists to
+    // catch a future edit that reintroduces a second, diverging formula at
+    // either call site instead of updating projectGridPoint itself.
+    const t = loadFactory().__test;
+    const layout = t.buildSurfaceLayout(t.DEFAULT_PAD_PROFILE);
+    const halfW = layout.gridW / 2;
+    const halfH = layout.gridH / 2;
+    const pads = layout.surfaces.filter(surface => surface.key.startsWith('pad:'));
+    assert.ok(pads.length > 0);
+
+    for (const progress of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+        const center = t.projectGridPoint(0, 0, progress);
+        for (const pad of pads) {
+            const point = t.projectGridPoint(pad.x, pad.y - t.GRID_CENTER_Y, progress);
+            assert.ok(
+                Math.abs(point.x - center.x) <= halfW + 1e-9,
+                `pad ${pad.key} x=${point.x} outside outline half-width ${halfW} at progress=${progress}`
+            );
+            assert.ok(
+                Math.abs(point.y - center.y) <= halfH + 1e-9,
+                `pad ${pad.key} y=${point.y} outside outline half-height ${halfH} at progress=${progress}`
+            );
+        }
+    }
 });

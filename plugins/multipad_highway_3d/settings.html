@@ -145,19 +145,27 @@
             { id: 'trigger-2', name: 'Trigger 2', center: 'external-right-center', edge: 'external-right-edge' },
         ];
 
+        // Matches SCENE_THEMES-independent core fallback color
+        // (SCENE_COLORS.inactiveSurface in 01-constants.js) shown for any
+        // pad/pedal/trigger with no piece assigned yet.
+        const UNASSIGNED_COLOR = '#2d3748';
+
         let profile = null;
         let padPieces = [];
         let pedalPieces = [];
         let pieceColors = {};
 
         function friendly(piece) { return FRIENDLY[piece] || piece; }
-        function clone(value) { return JSON.parse(JSON.stringify(value)); }
         function clampInt(value, min, max, fallback) {
             const n = parseInt(value, 10);
             if (!Number.isFinite(n)) return fallback;
             return Math.min(max, Math.max(min, n));
         }
-        function pieceColor(piece) { return pieceColors[piece] || '#2d3748'; }
+        function pieceColor(piece) { return pieceColors[piece] || UNASSIGNED_COLOR; }
+        function firstPieceColor(pieces) {
+            const first = pieces && pieces[0];
+            return first ? pieceColor(first) : UNASSIGNED_COLOR;
+        }
         function setStatus(message, kind) {
             const el = document.getElementById('multipad-h3d-status');
             if (!el) return;
@@ -186,7 +194,7 @@
             pad.label = pad.pieces && pad.pieces[0]
                 ? ((window.multipadH3dGetPieceLabels && window.multipadH3dGetPieceLabels()[pad.pieces[0]]) || pad.pieces[0].toUpperCase())
                 : '';
-            if (!pad.color || pad.color === '#2d3748') pad.color = pad.pieces[0] ? pieceColor(pad.pieces[0]) : '#2d3748';
+            if (!pad.color || pad.color === UNASSIGNED_COLOR) pad.color = firstPieceColor(pad.pieces);
         }
         function normalizePadPieces(pad) {
             const seen = new Set();
@@ -238,7 +246,7 @@
             const existing = getPadAt(row, col);
             if (active && !existing) {
                 const id = String(row * profile.padProfile.cols + col + 1);
-                pads.push({ id, row, col, label: '', pieces: [], color: '#2d3748' });
+                pads.push({ id, row, col, label: '', pieces: [], color: UNASSIGNED_COLOR });
                 pads.sort((a, b) => a.row - b.row || a.col - b.col);
             } else if (!active && existing && pads.length > 1) {
                 profile.padProfile.pads = pads.filter(pad => !(pad.row === row && pad.col === col));
@@ -256,8 +264,8 @@
                 .filter(pad => pad.row < rows && pad.col < cols)
                 .map(pad => Object.assign({}, pad, { id: String(pad.row * cols + pad.col + 1) }));
             if (!profile.padProfile.pads.length) setPadActive(0, 0, true);
-            render();
             saveProfile();
+            render();
         }
         function renderLayoutControls() {
             const sel = document.getElementById('multipad-h3d-layout');
@@ -304,8 +312,8 @@
                     btn.textContent = pad ? String(row * profile.padProfile.cols + col + 1) : '';
                     btn.onclick = () => {
                         setPadActive(row, col, !getPadAt(row, col));
-                        render();
                         saveProfile();
+                        render();
                     };
                     el.appendChild(btn);
                 }
@@ -378,7 +386,7 @@
                     const color = document.createElement('input');
                     color.type = 'color';
                     color.dataset.color = pad.id;
-                    color.value = pad.color || (pieces[0] ? pieceColor(pieces[0]) : '#2d3748');
+                    color.value = pad.color || firstPieceColor(pieces);
                     color.setAttribute('aria-label', `Pad color row ${rowIndex + 1} column ${colIndex + 1}`);
                     color.className = 'mt-2 h-7 w-full bg-dark-700 border border-gray-800 rounded';
                     cell.appendChild(color);
@@ -392,7 +400,7 @@
                     if (!sel.value) return;
                     pad.pieces = normalizePadPieces(pad);
                     if (!pad.pieces.includes(sel.value)) pad.pieces.push(sel.value);
-                    if (!pad.color || pad.color === '#2d3748') pad.color = pieceColor(sel.value);
+                    if (!pad.color || pad.color === UNASSIGNED_COLOR) pad.color = pieceColor(sel.value);
                     syncPadLabel(pad);
                     saveProfile();
                     render();
@@ -403,7 +411,7 @@
                     const pad = profile.padProfile.pads.find(p => p.id === btn.dataset.removePad);
                     if (!pad) return;
                     pad.pieces = normalizePadPieces(pad).filter(piece => piece !== btn.dataset.removePiece);
-                    if (!pad.pieces.length) pad.color = '#2d3748';
+                    if (!pad.pieces.length) pad.color = UNASSIGNED_COLOR;
                     syncPadLabel(pad);
                     saveProfile();
                     render();
@@ -453,7 +461,7 @@
                     surface: piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom',
                     label: piece ? ((window.multipadH3dGetPieceLabels && window.multipadH3dGetPieceLabels()[piece]) || piece) : '',
                     pieces: piece ? [piece] : [],
-                    color: existing.color || (piece ? pieceColor(piece) : '#2d3748'),
+                    color: existing.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR),
                 });
             }
             profile.pedalProfile.pedals = next;
@@ -475,8 +483,8 @@
                     (piece ? 'bg-dark-700/60' : 'bg-dark-700/30 opacity-75');
                 row.innerHTML =
                     `<span class="text-[10px] text-gray-500">Pedal ${i + 1}</span>` +
-                    `<select data-i="${i}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(pedalPieces, piece, true)}</select>` +
-                    `<input type="color" data-color="${i}" value="${pedal.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
+                    `<select data-i="${i}" aria-label="Pedal ${i + 1} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(pedalPieces, piece, true)}</select>` +
+                    `<input type="color" data-color="${i}" aria-label="Pedal ${i + 1} color" value="${pedal.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR)}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">`;
                 el.appendChild(row);
             });
             el.querySelectorAll('select').forEach(sel => {
@@ -486,7 +494,7 @@
                     pedal.pieces = piece ? [piece] : [];
                     pedal.surface = piece === 'hh_pedal' ? 'outline-top' : 'outline-bottom';
                     pedal.label = piece ? friendly(piece) : '';
-                    pedal.color = piece ? pieceColor(piece) : '#2d3748';
+                    pedal.color = piece ? pieceColor(piece) : UNASSIGNED_COLOR;
                     saveProfile();
                     render();
                 };
@@ -523,7 +531,7 @@
                     surface: TRIGGER_SIDES[i].center,
                     label: center.label || '',
                     pieces: center.pieces || [],
-                    color: center.color || (center.pieces && center.pieces[0] ? pieceColor(center.pieces[0]) : '#2d3748'),
+                    color: center.color || firstPieceColor(center.pieces),
                 });
                 if (mode === 'dual') {
                     const edge = current[i].edge || {};
@@ -532,7 +540,7 @@
                         surface: TRIGGER_SIDES[i].edge,
                         label: edge.label || '',
                         pieces: edge.pieces || [],
-                        color: edge.color || (edge.pieces && edge.pieces[0] ? pieceColor(edge.pieces[0]) : '#2d3748'),
+                        color: edge.color || firstPieceColor(edge.pieces),
                     });
                 }
             }
@@ -558,7 +566,7 @@
                 wrap.innerHTML =
                     `<div class="flex items-center gap-2 mb-2">` +
                     `<span class="text-xs text-gray-400 flex-1">${item.side.name}</span>` +
-                    `<select data-mode="${i}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">` +
+                    `<select data-mode="${i}" aria-label="${item.side.name} zone count" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">` +
                     `<option value="single"${mode === 'single' ? ' selected' : ''}>1-zone</option>` +
                     `<option value="dual"${mode === 'dual' ? ' selected' : ''}>2-zone</option>` +
                     `</select></div>` +
@@ -580,7 +588,7 @@
                     if (!trigger) return;
                     trigger.pieces = sel.value ? [sel.value] : [];
                     trigger.label = sel.value ? friendly(sel.value) : '';
-                    trigger.color = sel.value ? pieceColor(sel.value) : '#2d3748';
+                    trigger.color = sel.value ? pieceColor(sel.value) : UNASSIGNED_COLOR;
                     saveProfile();
                     render();
                 };
@@ -598,15 +606,22 @@
             const piece = trigger && trigger.pieces && trigger.pieces[0] || '';
             const surface = TRIGGER_SIDES[index][zone];
             const label = zone === 'center' ? 'Center' : 'Edge';
+            const sideName = TRIGGER_SIDES[index].name;
             return `<div class="grid grid-cols-[3.5rem_1fr_2.25rem] items-center gap-2 py-1 ${piece ? '' : 'opacity-75'}">` +
                 `<span class="text-[10px] text-gray-500">${label}</span>` +
-                `<select data-zone="${surface}" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
-                `<input type="color" data-color="${surface}" value="${trigger && trigger.color || (piece ? pieceColor(piece) : '#2d3748')}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">` +
+                `<select data-zone="${surface}" aria-label="${sideName} ${label} piece" class="bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">${optionHtml(padPieces, piece, true)}</select>` +
+                `<input type="color" data-color="${surface}" aria-label="${sideName} ${label} color" value="${trigger && trigger.color || (piece ? pieceColor(piece) : UNASSIGNED_COLOR)}" class="h-7 w-9 bg-dark-700 border border-gray-800 rounded">` +
                 `</div>`;
         }
         function hydrateDisplayControls() {
-            const settings = (window.multipadH3dGetSettings && window.multipadH3dGetSettings())
-                || { showLabels: true, hitGroupWindowMs: 8, cameraAngle: 0.35, sceneTheme: 'default', glowStrength: 0.5, feedbackIntensity: 0.7, timingColors: true, hitSparks: true, cinematicLighting: true, backgroundStyle: 'particles', backgroundIntensity: 0.5 };
+            // installSettingsGlobals() installs every multipadH3dGet*/Set*
+            // global in one synchronous pass, so boot()'s own
+            // `!window.multipadH3dGetProfile` gate (the only caller of this
+            // function) already guarantees multipadH3dGetSettings exists
+            // too - no need to duplicate every DEFAULT_SETTINGS value again
+            // here as a fallback that would only silently go stale if the
+            // core's own defaults ever changed.
+            const settings = window.multipadH3dGetSettings();
             const show = document.getElementById('multipad-h3d-show-labels');
             const range = document.getElementById('multipad-h3d-hit-window');
             const label = document.getElementById('multipad-h3d-hit-window-val');

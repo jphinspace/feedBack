@@ -324,10 +324,95 @@ Phase 7 output:
   normal- (not additive-) blended toward white, so even shortened to 100ms it
   was still the dominant contributor to that lingering-bright appearance,
   directly working against gems being dim immediately.
-- Incoming gems grow along an eased curve: they stay smaller for more of the
-  highway, ramp up faster near the target, exactly match the target surface
-  dimensions at the threshold, then stop growing (in scale, not position —
-  see above) after they pass the target.
+- Incoming gems are drawn at their real target dimensions (`surface.w/h`) at
+  every progress value - there is no separate world-space size-growth curve.
+  Camera perspective alone (the same distance-based foreshortening that
+  makes anything look smaller far away) accounts for gems reading as smaller
+  near spawn; nothing artificially shrinks them on top of that. This is the
+  end state of three earlier attempts at a world-space size-growth curve,
+  each fixing one artifact and surfacing the next:
+  1. A flat eased curve (cubic, 43%/68%-of-target starting scale depending on
+     event type) - grew independently of gem *position*, which shrinks
+     toward its neighbors via `TUNNEL_BACK_SCALE`-based back-projection.
+     Those two curves diverged badly at low progress (0.43-0.68 vs. 0.12),
+     so distant gems visibly overlapped each other and spilled outside a
+     correctly-sized-but-comparatively-tiny layout-preview outline.
+  2. A shared `tunnelScaleFactor(progress)` helper (linear, `TUNNEL_BACK_SCALE`
+     → 1) used by *both* gem size and the outline - fixed same-instant
+     overlap within one hit group, but surfaced a different artifact: a
+     dense, evenly-timed stream of hits on the *same* pad would visibly
+     overtake and overlap itself partway down the highway, then the gap
+     would balloon back open near the target ("gems start out fast, then
+     slow down and bunch up, then speed up again"). Root cause, confirmed by
+     simulating the real camera-projection math: on-screen gem *spacing*
+     from the next hit on the same pad only goes through one camera-distance
+     division, but on-screen gem *size* goes through that division *on top
+     of* its own already-growing world-space curve, so size briefly grew
+     faster than spacing before both re-converged at the target.
+  3. Cubic-easing the progress fed into `tunnelScaleFactor` for size only
+     (`sizeProgress = scaleProgress ** 3`) removed that mid-flight overtake
+     without touching position or the outline - but the compounded result
+     (two nested curves plus camera perspective) started reading as visually
+     extreme/goofy, particularly right near the threshold.
+  Removing the size curve entirely (this state) sidesteps all three
+  artifacts at once - there's only one thing determining "how big," so
+  nothing can grow out of step with anything else - at the cost of losing
+  the deliberate "grows into place" cue those curves provided; see the
+  spawn fade-in below for its replacement.
+- With no size ramp to signal "just spawned," gems instead fade in from
+  fully transparent over `NOTE_SPAWN_FADE_SEC` (0.25s) - `fadeInFactor` in
+  `placeNote`, a 0..1 ramp over elapsed time since the note entered the
+  lookahead window, multiplied into whatever opacity the note would
+  otherwise have (repeat, past-threshold, or normal). The layout-preview
+  outline (below) fades in the same way, via the same `fadeInFactor` passed
+  through from `placeNote`.
+- Removing the size-shrink curve (above) surfaced one more mismatch:
+  individual pad *positions* were still interpolating toward their own
+  per-pad back-projected point at `TUNNEL_BACK_SCALE` (12%) of their real
+  offset from grid center - the same mechanism gem size used to share before
+  it was removed - while the layout-preview outline had already moved to a
+  fixed real (unscaled) size with only its *center* converging toward the
+  vanishing point. So a just-spawned gem sat near the *center* of an
+  already-correctly-shaped, already-full-size outline box instead of at its
+  real proportional spot within it, only migrating out to the right place as
+  it approached the target - reported directly from a screenshot of a
+  just-faded-in gem sitting near the middle of its outline instead of at the
+  top-center position it should have read at from the start. `placeNote` now
+  builds gem position the same way `placeLayoutPreview` builds the outline's
+  position: the *grid's own center* converges toward the back/vanishing
+  point (`centerX = TUNNEL_BACK_X_OFFSET * (1 - positionProgress)`, `centerY
+  = GRID_CENTER_Y + TUNNEL_BACK_LIFT * (1 - positionProgress)` - literally
+  the same two lines placeLayoutPreview already used), and each pad's own
+  offset from that center (`surface.x`, `surface.y - GRID_CENTER_Y`) is
+  added on top *unscaled* - real, constant, never compressed toward the
+  vanishing point on its own. A gem is now at the exact right relative spot
+  inside the outline at every progress value, not just once it arrives, and
+  - as a side effect - this also removes the last size/position growth-rate
+  mismatch that could still compound with camera perspective: with gem size
+  now constant (real target size) and gem offset-from-center now constant
+  too, apparent (on-screen) size and apparent (on-screen) spacing both grow
+  via the exact same single camera-distance division, so their ratio no
+  longer drifts across progress the way it could when either one carried
+  its own separate progress-dependent curve.
+- **Consolidation refactor.** Three bugs in a row (this section's history)
+  were the same shape: the "where does a point in the grid's local space
+  appear at a given travel progress" transform got reimplemented separately
+  in `placeNote` and `placeLayoutPreview`, and the two copies drifted out of
+  sync - different size curves, then a size/position growth-rate mismatch,
+  then a position-only compression the outline didn't share. Rather than
+  keep hand-syncing two formulas, that transform is now one module-scoped
+  pure function, `projectGridPoint(localOffsetX, localOffsetY, progress)`,
+  returning `{x, y}`. Both callers pass their own local offset from the
+  grid's center - a pad's `(surface.x, surface.y - GRID_CENTER_Y)`, or
+  `(0, 0)` for the outline's own center - and get the identical
+  center-convergence math back. Exposed via `__test.projectGridPoint` for
+  unit testing (`tests/skeleton.test.js`): one test locks in the formula's
+  exact values at the endpoints and confirms offsets stay unscaled at every
+  sampled progress; a second sweeps every pad in the default 3x3 profile
+  against the outline's own projected half-extents at several progress
+  values, so a future edit that reintroduces a second, diverging formula at
+  either call site (instead of updating `projectGridPoint` itself) fails a
+  fast unit test instead of only turning up in a screenshot days later.
 - Hit-feedback sparks spawn from multiple points spread evenly around a
   target surface's whole border (`sparkBorderBurst`), rather than clustering
   at one spot near the top — applies to rectangular pads/pedal bars and
@@ -335,25 +420,37 @@ Phase 7 output:
 - Approaching non-repeat, pre-threshold pad notes (`placeLayoutPreview`) carry
   a faint white outline of the whole pad grid's bounding box with them as they
   travel, so the hit group reads as one unit rather than a loose cluster of
-  gems. The outline's own left/right/top/bottom edges are each projected
-  through the same per-point back-projection formula used for individual pad
-  positions (linear back-to-front interpolation), not scaled as one shape by
-  the note's own eased `noteScale` curve — `noteScale` describes how a single
-  note gem grows (cubic-eased, already 43-68% of its own target size even at
-  progress 0), which doesn't describe how far apart independent pad
-  trajectories have actually spread at a given progress. Scaling the whole
-  shape by `noteScale` left the outline mismatched against where the actual
-  notes were before they neared the threshold — oversized and out of step in
-  the distance, only lining up correctly right near the target. Bounding by
-  the same linear edge interpolation as the notes themselves keeps the
-  outline correctly sized and positioned at every point along the approach,
-  since it's the same affine transform applied to the grid's own bounding
-  edges instead of a mismatched curve. It grows into alignment with the real
-  grid by the threshold, in step with the note gems. The outline is a filled
-  thin-frame shape (`buildFrameGeometry` — an outer
-  rounded rect with a smaller rounded rect hole cut out), not a stroked
+  gems. The outline's center is derived from the same back-projection math
+  as an individual pad's own x/y (the grid box's local center is always
+  `(0, GRID_CENTER_Y)`, so back-projecting that one point collapses to
+  `centerX = TUNNEL_BACK_X_OFFSET * (1 - scaleProgress)`, `centerY =
+  GRID_CENTER_Y + TUNNEL_BACK_LIFT * (1 - scaleProgress)`); it moves in step
+  with the note gems, but - like gem size (see above) - is drawn at its real
+  full (`gridW`/`gridH`) size throughout rather than scaled up from a
+  smaller spawn size, plus a small fixed margin (`LAYOUT_PREVIEW_GROUP_MARGIN`,
+  0.14 world units added to each side in `buildLayoutPreviewGroupFrameGeometry`)
+  so the frame reads as a border around the hit group instead of touching
+  the outermost gems. The margin only inflates the rendered frame geometry -
+  `gridW`/`gridH` themselves (used for pad positions, the tunnel guide lines,
+  and the outline-bounds test) are untouched, so gems stay comfortably
+  inside the margin rather than right up against it. The outline is a filled thin-frame shape (`buildFrameGeometry` — an
+  outer rounded rect with a smaller rounded rect hole cut out), not a stroked
   `Line`: WebGL clamps `LineBasicMaterial.linewidth` to 1px on most
-  platforms, so a genuinely visible border needs real geometry. Per-pad
+  platforms, so a genuinely visible border needs real geometry.
+  `buildFrameGeometry` takes an explicit corner radius rather than deriving
+  one from its own outer `w`/`h` (its only previous behavior) - a margin
+  wide enough on the *straight* edges still let a corner gem touch or
+  overlap the outline, because the default radius
+  (`Math.min(w, h) * NOTE_GEM_CORNER_RADIUS`, using the outline's own full
+  outer dimensions) came out several times larger than any individual gem's
+  own rounding: for a full 3x3 grid that's roughly a 0.53-unit radius vs.
+  a single gem's ~0.14, and a large rounded corner cuts inward (relative to
+  the sharp bounding-box corner) by more than the straight-edge margin
+  alone accounted for. The outline now uses
+  `LAYOUT_PREVIEW_GROUP_CORNER_RADIUS` - fixed at individual-gem scale
+  (`NOTE_GEM_CORNER_RADIUS * Math.min(PAD_W, PAD_H)`), independent of the
+  whole grid's size - so the rounding at a corner is consistent with a
+  gem's own corner and doesn't eat into the margin. Per-pad
   outlines (one per cell, each pad's own target color) were tried first but
   removed — once the single whole-group outline existed, the individual cell
   outlines added visual noise without adding information. Only pad-type hits
@@ -432,18 +529,15 @@ Phase 7 output:
   overlapping. It does not by itself change how much real reaction time a
   note is visible for.
 - Reaction-time lookahead is no longer a flat seconds value — it's expressed
-  in beats (`NOTE_AHEAD_BEATS = 2.99`, chosen as "about 3 beats" without
-  risking an edge-case hit group right at the 3-beat boundary reading as
+  in beats (`NOTE_AHEAD_BEATS = 2.24`, chosen as "about 2 and a quarter beats" without
+  risking an edge-case hit group right at the 2-and-a-quarter-beat boundary reading as
   still-resolving) and converted to seconds from the chart's own local tempo
   each frame (`updateNoteAheadFromTempo`, using the two `bundle.beats`
   entries bracketing the current playhead — so it follows tempo changes
   through the song rather than assuming one fixed BPM). Falls back to a flat
   `NOTE_AHEAD_FALLBACK_SEC` (2.0s, matching the previous flat value) when the
   chart has no usable beat grid (fewer than 2 beats — e.g. no
-  `song_timeline`). At 139 BPM this works out to ~1.29s, roughly a third
-  less than the previous flat 2.0s, thinning on-screen note density
-  accordingly on dense, faster charts while staying proportionally longer on
-  slower ones.
+  `song_timeline`).
 - Because `NOTE_AHEAD_BEATS`'s seconds equivalent now varies with tempo, a
   note's growth-curve progress (`placeNote`'s `rawProgress`) is normalized
   against a per-frame `activeNoteSpawnDepth` (`activeNoteAheadSec *
@@ -454,6 +548,152 @@ Phase 7 output:
   `TUNNEL_DEPTH` itself stays fixed — it's now purely cosmetic, sizing only
   the guide-line wireframe and the camera's look-at target, decoupled from
   where notes actually spawn.
+- **Code-smell pass** over all five `src/*.js` files. Fixed, in order of
+  impact:
+  - Dead code: the pooled note mesh's `flash` (a third mesh/material per
+    note, left over from the removed threshold-crossing white flash) was
+    still being created, positioned, and reset every frame despite never
+    being made visible or given nonzero opacity anywhere. Removed
+    entirely, along with the now-unused `NOTE_GEM_FLASH_Z_OFFSET` constant.
+  - Material leak: template note materials (`noteMaterials`) and the
+    layout-preview outline's template material are only ever `.clone()`d
+    onto scene meshes, so they never enter the scene graph and
+    `disposeObjectTree(scene)` never reaches them. `teardown()` was
+    dropping both via plain reassignment (`noteMaterials = new Map()`,
+    `layoutPreviewGroupMaterial = null`) with no `.dispose()` call, leaking
+    them (and their canvas gradient textures) on every teardown/init
+    cycle. Fixed via a new shared `disposeNoteMaterials()` (built on the
+    existing `disposeMaterial` helper, which also disposes a material's
+    `.map` texture - something the old glow-strength-change code path,
+    which disposed materials directly, was itself missing) used from both
+    `teardown()` and the settings-change path, plus an explicit dispose
+    for `layoutPreviewGroupMaterial` in `teardown()`.
+  - Duplication: `lowerBoundHitEvents` (`.t`-keyed) and `lowerBoundTimeField`
+    (`.time`-keyed) were the identical binary search with a different
+    hardcoded field name. Consolidated onto a shared
+    `lowerBoundByField(entries, minTime, field)`; both original names are
+    kept as thin wrappers since `lowerBoundHitEvents` is asserted on by
+    name in tests and `lowerBoundTimeField` is called throughout
+    `04-renderer.js`.
+  - Duplication: `validatePadProfile`, `validatePedalProfile`, and
+    `validateTriggerProfile` each independently re-implemented "is this a
+    valid `#rrggbb` string, else format a fallback hex" (including redoing
+    the same regex `colorHexFromCss` already encapsulates) and "default
+    label from the first assigned piece." Extracted `sanitizeProfileColor`
+    and `defaultLabelForPieces` (`01-constants.js`, next to the existing
+    `sanitizeProfileId`/`sanitizeProfileDisplayText`) and pointed all three
+    validators at them - each keeps its own fallback *color value* (their
+    semantics genuinely differ: pad falls back through the piece palette
+    to a neutral surface color, pedal always has a default piece to fall
+    back to, trigger falls back to a distinct purple), only the
+    valid-hex-or-fallback mechanics are now shared. Also replaced a
+    hand-typed `'#2d3748'` magic string (pad's no-piece color fallback)
+    with `SCENE_COLORS.inactiveSurface` formatted through the same helper.
+  - Duplication: `readSettings()` read `showLabels` with its own two-line
+    `'1'/'true'` vs. `'0'/'false'` block right above a loop doing the
+    identical thing for `timingColors`/`hitSparks`/`cinematicLighting`.
+    Folded `showLabels` into that loop.
+  - Duplication: `projectDrumTab`'s three hit-event branches (pedal,
+    trigger, pad) each ended with the same `hitEvents.push(...)` /
+    `stats.projectedHits++` / `incrementCount(stats.projectedPieces, ...)`
+    triplet. Extracted a local `recordEvent(event)` closure; each branch
+    now just builds its event shape (which still differs meaningfully
+    between the three - different id/label/surface fields) and calls it.
+  - Stale comment: `NOTE_AHEAD_BEATS`'s comment cited its old value (2.24,
+    "rather than 2.25") and a specific "2-and-a-quarter beats" framing that
+    no longer matched the constant after a later manual tuning pass changed
+    it to 1.99 - reworded to describe the *why* (avoid double-showing a
+    hit group that lands exactly on a round-fraction boundary) without
+    hardcoding to a specific fraction that goes stale on the next retune.
+  All 25 tests (23 prior + the 2 `projectGridPoint` tests from the
+  consolidation refactor above) pass unchanged, and the renderer was
+  re-verified visually - including exercising a settings change and a
+  teardown/reinit cycle (viz picker away and back) to specifically drive
+  the new material-disposal path - with no console errors and no visual
+  regressions.
+- **Test-suite review.** Went through `tests/skeleton.test.js` for
+  stale/useless assertions and simplification opportunities:
+  - Fixed one non-diagnostic assertion: the pad-profile-validation test
+    injected `"__proto__":"snare"` via `JSON.parse` to probe
+    prototype-pollution safety, then asserted `{}.polluted === undefined`
+    - checking a property name (`polluted`) that was never part of the
+      injected payload, on an unrelated object literal. It would pass
+      regardless of whether the code had a real pollution bug. Replaced
+      with assertions on the actual defenses: `profile.fallbacks` has a
+      genuinely null prototype (matches `validatePadProfile`'s
+      `Object.create(null)`), and `'__proto__'` never became an own member.
+  - Found a real coverage gap: the only renderer-lifecycle test always
+    calls `renderer.init(null, ...)`, which returns before ever calling
+    `loadThree()` - so `initScene()`, `buildSurfaceGrid()`, `placeNote()`,
+    `placeLayoutPreview()`, and all per-frame render code were **never
+    exercised by any test**, only by manual Playwright checks. This is
+    exactly the gap the `NOTE_SPAWN_FADE_SEC is not defined` crash earlier
+    in this session fell through - a real init+draw test would have caught
+    it in milliseconds instead of requiring a full docker+browser
+    investigation to even notice something was wrong.
+  - Closed the gap: added `tests/three-stub.js`, a minimal fake of the
+    slice of the Three.js API `04-renderer.js` actually calls (`Scene`,
+    `Group`, `Mesh`, materials, geometries, camera, lights, `WebGLRenderer`,
+    etc. - structurally correct, no real geometric math, no WebGL). Wired
+    it into `loadFactoryHarness()` via the `window.__multipadH3dThree`
+    escape hatch `loadThree()`'s own doc comment already anticipated but
+    the harness never actually used. Added two tests that drive a real
+    `init(fakeCanvas(), bundle)` → `draw(bundleWithDrumTab)` →
+    `destroy()` cycle (plus a destroy/re-init cycle, matching the real
+    `playSong()` stop()→init() contract) and assert it doesn't throw and
+    produces the expected surface/note counts. Verified the new tests
+    actually catch this class of bug by temporarily reintroducing the
+    exact `NOTE_SPAWN_FADE_SEC` crash and confirming both new tests failed
+    with the right error, then reverting.
+- **`settings.html` cleanup** (HTML validity + code smells in its embedded
+  script). Verified the static markup's tag balance and every `for=`/`id=`
+  pairing programmatically (no genuine W3C-relevant errors - the local
+  `tidy` binary is HTML4-era and flags valid HTML5 like `role`/`aria-*`/
+  `type=range`/`type=number` as "proprietary," so it wasn't a useful
+  validator here beyond confirming tag nesting). Findings:
+  - Dead code: a `clone(value)` JSON-round-trip helper was defined but
+    never called anywhere in the file. Removed.
+  - Magic-string duplication: the "unassigned" fallback color `'#2d3748'`
+    (matches core's `SCENE_COLORS.inactiveSurface`) was hand-typed **13
+    times** across pad/pedal/trigger color-resolution logic. Extracted a
+    `UNASSIGNED_COLOR` constant and a `firstPieceColor(pieces)` helper for
+    the repeated "first assigned piece's color, else unassigned" ternary,
+    and pointed all 13 call sites at them.
+  - Duplicated defaults: `hydrateDisplayControls()` had a ~10-field
+    hardcoded fallback object mirroring `DEFAULT_SETTINGS` from
+    `01-constants.js`, only reachable if `window.multipadH3dGetSettings`
+    were missing - but `boot()` (the function's only caller) already gates
+    on `window.multipadH3dGetProfile`, and `installSettingsGlobals()`
+    installs every `multipadH3d*` global in one synchronous pass, so the
+    fallback was dead in practice and would only have silently gone stale
+    if core's own defaults ever changed. Removed; the function now trusts
+    `window.multipadH3dGetSettings()` directly, matching the trust boundary
+    `boot()` already established for the sibling globals.
+  - Accessibility inconsistency: `renderPads()` carefully adds
+    `aria-label` to every dynamically-created `<select>`/`<input
+    type=color>`, but `renderPedals()`, `renderTriggers()`, and `zoneRow()`
+    built their analogous controls via template-string `innerHTML` with no
+    accessible name at all (only an adjacent, unassociated `<span>`).
+    Added matching `aria-label`s so a screen reader announces "Pedal 1
+    piece" / "Trigger 1 Edge color" etc. instead of a bare, unnamed
+    control.
+  - Inconsistent operation order: nearly every mutate-then-persist handler
+    calls `saveProfile(); render();`, but two call sites
+    (`applyCustomDimensions()`, the custom-grid cell `onclick`) called them
+    in the opposite order. Harmless either way (both operate off the
+    already-mutated in-memory `profile`, `render()` doesn't depend on
+    `saveProfile()` having run), but normalized to the dominant order for
+    readability.
+  Verified via Playwright against the real Settings → Graphics →
+  "Multipad Highway 3D" panel: initial render (pad grid colors, pedal/
+  trigger dropdowns, all graphics sliders/checkboxes) matches pre-change
+  behavior; confirmed the new `aria-label`s resolve correctly via
+  `getAttribute`; exercised pedal count 0→2, trigger count 0→2, switching
+  a trigger to 2-zone, assigning a piece to the new edge zone (color
+  swatch resolved correctly through the new `firstPieceColor` path), and
+  removing one piece from a multi-piece pad (color correctly stayed, since
+  only pads left with *zero* pieces reset to `UNASSIGNED_COLOR`) - no
+  console errors beyond pre-existing unrelated 404s.
 
 Phase 8, post-MVP: Add MIDI/scoring only if needed. If this plugin takes ownership of input or scoring later, connect to the core `midi-input` domain, mirror `drum_highway_3d` MIDI-to-piece behavior, implement hit/miss matching by routed pad/pedal source or render surface rather than raw MIDI note or original piece id, then consider `note-detection`, stats, progression, synth feedback, and scoring diagnostics.
 
@@ -485,14 +725,41 @@ MIDI output and pad lighting: Explore whether supported controllers can receive 
 
 External triggers and pedals: External pad triggers live in a dedicated trigger profile with surface-based UI, separate from the built-in pad profile. Later work should add hardware-specific trigger presets and promote footswitches, dual-zone triggers, choke gestures, aftertouch, and control-change gestures into first-class profile inputs.
 
-Advanced drum articulations: Add drags, ruffs, rolls, buzzes, cymbal chokes, stickings, left/right hand hints, double-kick notation, velocity-layer visuals, and per-piece timing windows.
-
-Practice features: Add pad-specific drills, weak-pad review, adaptive difficulty, fills-only practice, groove loops, metronome subdivision overlays, and end-of-song feedback by pad.
-
-Authoring workflow: Coordinate with editor/import tooling so drum-tab authors can author for multipad profiles directly, preview pad layouts, and export recommended MIDI mappings with a song.
-
 Multiplayer and splitscreen expansion: Eventually support both `drum_highway_3d` and `multipad_highway_3d` at the same time so one player can use a drumset while another uses a multipad. That requires app-level visualization routing, per-panel instrument ownership, and likely MIDI/session ownership changes outside this plugin. Until those host changes exist, this standalone plugin can override the standard drum highway for drum charts when installed. Continue to support drummer-plus-guitar practice sessions without fighting over input focus.
 
 Visual themes and stage integration: Add hardware-inspired skins, alternate camera modes, stage/venue lighting sync, audience-facing performance mode, and lower-cost 2D/Canvas fallback visuals.
 
-Profile sharing: Add safe layout preset sharing only if local profiles grow beyond the MVP generic pad grid and generic pedal defaults.
+multipad highway release plan
+
+0.1.0: Completed MVP
+	-No hit detection, only visuals (works for disconnected playalong)
+	-No major visual bugs
+	-Default 3x3 grid w/two pedals tested
+	-Other grids & custom: not tested
+	-Settings: happy cases tested for 3x3
+
+0.2.0: Placeholder release, may not use, but keeping in case I have a good idea 
+	-maybe this is where we test other grid/kit layouts
+	-maybe support circle & larger/smaller pads
+	-save/load/share multiple total kit profiles (pads + pedals + triggers), auto load last used
+	-anything else that comes to mind that can doesn't involve MIDI support yet
+
+0.3.0: MIDI/hit detection
+	-maybe it'll just work?? use same logic as drum highway
+	-hit/miss effects
+	-scoring including combo tracker (may put off to 0.4.0)
+	-input device timing calibration NOT included here
+
+0.4.0: Placeholder release, may not use
+  -maybe include device calibration here
+	-better handling fills (fill detected -> hit pads however you want)
+	-more settings improvements
+	-bug fixes
+
+1.0rc1: see if can clean up the visuals more and improve settings usability
+	-all pad/pedal/trigger combos tested
+	-better note gem display & visual effects
+	-performance improvements
+  -ensure the 3x3, 2x4, and 4x3 default layouts specifically match corresponding roland, nux, and yamaha pad defaults
+  -cool backgrounds
+  -fix last round of bugs
