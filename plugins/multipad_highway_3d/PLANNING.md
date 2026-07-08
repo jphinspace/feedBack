@@ -77,7 +77,7 @@ MIDI-to-pad mapping layer, post-MVP only: Prefer the same MIDI-to-piece mapping 
 
 Hit detection and scoring layer, post-MVP only: If this plugin later scores input, match `drum_highway_3d` behavior and timing windows. Scoring should compare the routed source/surface identity, not the raw MIDI note or original piece id: pad hits match by `padId`, external trigger hits match by `triggerId`, pedal hits match by `pedalId` or `surfaceId`, and both chart hits and MIDI input should pass through the same piece-to-route projection first. The MVP should focus on UI/visualization and not claim or implement note detection.
 
-Hit event and FX layer: Renders approaching notes, pad landing flashes, timing colors, sparks, combo feedback, ghost/accent/flam shapes, pedal surface pulses, hit group cues for same-time hits, and optional audio-reactive ambience. This layer should borrow stable shared helpers from `drum_highway_3d` and `highway_3d` whenever the behavior matches; do not clone-and-fork helper code unless the multipad hit plane actually needs different behavior.
+Hit event and FX layer: Renders approaching notes, note threshold flashes, timing colors when supplied, sparks, kick shake, hit group cues for same-time hits, and optional audio-reactive ambience. Until MIDI/scoring is implemented, chart playback should not flash or pulse target surfaces in a way that implies a confirmed hit. This layer should borrow stable shared helpers from `drum_highway_3d` and `highway_3d` whenever the behavior matches; do not clone-and-fork helper code unless the multipad hit plane actually needs different behavior.
 
 Optional drum synth/audio feedback layer: Provides local audible pad feedback, probably by reusing the WebAudioFont drum-kit approach from the drum plugins. It must be optional and volume-controlled because the song audio remains the primary playback path.
 
@@ -133,7 +133,7 @@ Scoring tests, post-MVP: Use synthetic hits only if the plugin later adds scorin
 
 Renderer contract tests: Check factory registration, `contextType`, narrow `matchesArrangement`, idempotent `init`/`destroy`, split-panel focus behavior, resource disposal patterns, and the canvas resize/reframe drift logic already protected for drum/keys highways.
 
-Browser and visual tests: Add Playwright coverage that loads a drum-tab song, selects Multipad Highway 3D, asserts the WebGL canvas is nonblank, verifies MVP pad-surface framing, verifies `hh_pedal` pulses the top outline surface, verifies `kick` pulses the bottom outline surface, and captures desktop/mobile/splitscreen screenshots.
+Browser and visual tests: Add Playwright coverage that loads a drum-tab song, selects Multipad Highway 3D, asserts the WebGL canvas is nonblank, verifies MVP pad-surface framing, verifies `hh_pedal` routes through the top outline surface, verifies `kick` routes through the bottom outline surface, verifies threshold crossing flashes the note gem rather than the target surface, and captures desktop/mobile/splitscreen screenshots.
 
 Routing tests: Confirm Auto mode claims drum/percussion arrangements with drum tabs when this standalone plugin is installed, including when `drum_highway_3d` is also present, and does not claim Lead, Rhythm, Bass, Combo, Guitar, or notation-backed keys arrangements. Full-band packs should stay with the active instrument unless the active arrangement is drums/percussion.
 
@@ -200,14 +200,14 @@ Phase 5 output:
 - Default piece colors use the same default palette mapping as `drum_highway_3d`.
 - Renderer settings now apply label visibility, camera angle, scene theme, glow strength, hit feedback intensity, and hit group window.
 
-Phase 6: Polish visual feedback. Add pad flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, pedal surface pulses, hit group cues, and shared background/cinematic helpers where they make sense.
+Phase 6: Polish visual feedback. Add note threshold flashes, timing colors derived from chart state where available, sparks, ghost/accent/flam/open/bell cues, hit group cues, and shared background/cinematic helpers where they make sense. Target-surface hit flashes and scoring-style pulses should wait for real hit detection.
 
 Phase 6 implementation note:
 
 - For this plugin's MVP, articulations/cues are intentionally ignored. Ghost,
   accent, flam, open, and bell flags route as ordinary hits on the resolved
   pad, pedal, or trigger surface.
-- Pad flashes, timing colors, sparks, pedal pulses, and cinematic/background
+- Note threshold flashes, timing colors, sparks, and cinematic/background
   helpers should match `drum_highway_3d` behavior where a comparable multipad
   surface exists. Without MIDI/scoring ownership, timing defaults to the same
   on-time green used by `drum_highway_3d` for OK/unknown timing; EARLY/LATE
@@ -217,12 +217,13 @@ Phase 6 output:
 
 - Pad, pedal, and trigger hits render as plain hits on their resolved surface;
   articulation/cue variants are intentionally ignored for this MVP.
-- Hit flashes, timing colors, sparks, pedal/surface pulses, cinematic lighting,
-  and background ambience now follow the comparable `drum_highway_3d`
-  behavior.
-- Surface pulse reset restores intensity, opacity, scale, and emissive color
-  after timing pulses.
-- Grid rebuild creates fresh flash textures for rebuilt surface meshes.
+- Note threshold flashes, timing colors, sparks, kick shake, cinematic lighting,
+  and background ambience now provide playback feedback without implying hit
+  confirmation.
+- Surface state reset restores base intensity, opacity, scale, and emissive
+  color before each frame.
+- Grid rebuild disposes old surface geometry/materials before creating fresh
+  target and label meshes.
 
 Phase 7: Stabilize the visual MVP. Run focused tests, verify desktop/mobile/splitscreen framing, tune performance, update docs/screenshots, and make sure the plugin works without MIDI hardware.
 
@@ -249,21 +250,210 @@ Phase 7 output:
 - Focused JS tests now assert exact default piece-to-surface routing for every
   known pad piece, projection coverage for `stack` and `bell`, and real-chart
   detection for empty drum-tab hit streams.
-- `screen.js` remains one delivered script for plugin-loader compatibility, but
-  it is now organized into explicit internal sections: runtime constants, drum
-  vocabulary, profile/settings validation, chart source selection, projection,
-  renderer lifecycle, and public/test API registration. The renderer consumes a
-  named `chartSourceFromBundle()` helper so `bundle.drumTab` source decisions
-  are testable without WebGL.
-- Visual framing now leans closer to the guitar/bass `highway_3d` feel: a wider
-  camera lens, closer highway framing, deeper note travel, a lifted far lane
-  endpoint, a shared pitched highway transform, and an off-center shoulder
-  camera make same-lane incoming gems travel down the grid more clearly without
-  changing pad surfaces or note gem materials.
+- `screen.js` remains one delivered script for plugin-loader compatibility —
+  `plugin.json`'s `"script"` field still points at it and the host still loads
+  it as a single `<script>` tag — but it is now a **generated file**. It is
+  authored as five files under `src/` (`01-constants.js`, `02-profiles.js`,
+  `03-projection.js`, `04-renderer.js`, `05-api.js`), matching the same
+  sections the file was already internally organized into (runtime constants
+  and drum vocabulary, profile/settings validation, chart source selection and
+  projection, Three.js renderer lifecycle, and public/test API registration).
+  Run `./build.sh` after editing anything under `src/` and commit the
+  regenerated `screen.js` in the same commit; CI's `multipad-h3d-js-fresh` job
+  rebuilds and diffs it, mirroring the repo root's `tailwind-fresh` check. A
+  lazy-`import()` split (mirroring how this plugin already lazy-loads
+  Three.js) was evaluated and rejected: `__probe()` and the renderer
+  lifecycle's no-canvas test path depend on state (`activeSettings`,
+  `surfaces`, cached projection) that is read by always-synchronous code and
+  written by Three.js-only code, so splitting across that boundary at import
+  time would make `__probe()`/lifecycle behavior depend on network timing
+  instead of staying synchronous. A source-level split with a generated
+  runtime artifact keeps the plugin-loader contract, the test harness (which
+  still `vm.runInContext`s the one generated `screen.js`), and this
+  synchronous behavior completely unchanged. The renderer consumes a named
+  `chartSourceFromBundle()` helper so `bundle.drumTab` source decisions are
+  testable without WebGL.
+- Visual framing uses a simple baseline with a small camera pan: the camera
+  faces the target grid head-on, each lane extends straight backward from its
+  target surface, and the camera/look target are shifted up-right so the target
+  area sits slightly down-left on screen. The far highway origin is shifted very
+  far up-right and compressed toward a shared back point so gems approach diagonally
+  from the upper-right side of the view without moving the camera or target grid.
 - Incoming note gems and rectangular target surfaces now share rounded-corner
   rectangle geometry, while circular trigger targets remain circular.
-- Each incoming note gem has a colored additive edge glow, implemented as a
-  pooled halo mesh behind the rounded rectangle body.
+- Regular pad target surfaces now render as thin routed-color outlines with a
+  10% opacity center fill, keeping the target grid visible without large solid
+  color blocks.
+- Note gem glow outlines are currently removed; they were not reading cleanly
+  enough for the MVP and can be revisited later.
+- Note gem bodies now use a subtle per-color gradient that darkens toward the
+  lower-left corner. The visible gem face is a dedicated rounded front mesh with
+  explicit UVs, keeping the gradient independent of extruded-body UV behavior.
+- Transparent target fills no longer write depth, preventing target areas from
+  cutting black holes through incoming gems while they are still behind the grid.
+- The top and bottom pedal outline targets now share identical dimensions, and
+  the floor plane sits below the full target grid so it does not cut through the
+  bottom outline target.
+- The old target-zone flash meshes and large kick floor flash have been removed;
+  chart playback no longer creates visual feedback that implies a confirmed hit.
+- Playback threshold crossing no longer flashes or pulses target areas; until
+  real hit detection exists, crossing the threshold no longer flashes the
+  note gem white either (see below) — chart playback creates no visual
+  feedback that implies a confirmed hit or a miss judgement at all.
+- After crossing the threshold, the gem no longer freezes in place — with no
+  hit detection yet implemented, every note is effectively unhandled, so it
+  keeps moving through the target at the same speed rather than disappearing
+  abruptly. Position keeps extrapolating along the exact same back-point-to-
+  target line it was already traveling on (`positionProgress` is not clamped
+  above 1), instead of freezing laterally and only pushing forward in z —
+  the latter used to create a visible kink in the travel direction right at
+  the threshold. Size still caps at the target's own dimensions once past
+  threshold (a separately clamped `scaleProgress`), so it doesn't keep
+  growing in scale — any apparent growth past that point is perspective only.
+  The gem also immediately (no fade-in) snaps to gray
+  (`NOTE_PAST_THRESHOLD_COLOR`) at a flat 5% opacity (`NOTE_PAST_THRESHOLD_OPACITY`)
+  — more transparent than the colored repeat-note gems (0.24 body / 0.2 face)
+  — for the whole `NOTE_BEHIND_SEC` (0.18s) window it continues moving before
+  being culled, rather than fading down from a brighter starting opacity.
+  This snap-immediately behavior went through two more-gradual iterations
+  first (a 0.8s fade, then a 0.3s fade matched to a threshold-crossing white
+  flash) before landing here: both left the gem reading as noticeably bright
+  — and, combined with continuing to grow via perspective, noticeably large
+  — for a perceptible stretch right after crossing. The threshold-crossing
+  white flash mentioned in earlier phases has been removed entirely: it was
+  normal- (not additive-) blended toward white, so even shortened to 100ms it
+  was still the dominant contributor to that lingering-bright appearance,
+  directly working against gems being dim immediately.
+- Incoming gems grow along an eased curve: they stay smaller for more of the
+  highway, ramp up faster near the target, exactly match the target surface
+  dimensions at the threshold, then stop growing (in scale, not position —
+  see above) after they pass the target.
+- Hit-feedback sparks spawn from multiple points spread evenly around a
+  target surface's whole border (`sparkBorderBurst`), rather than clustering
+  at one spot near the top — applies to rectangular pads/pedal bars and
+  circular external triggers alike.
+- Approaching non-repeat, pre-threshold pad notes (`placeLayoutPreview`) carry
+  a faint white outline of the whole pad grid's bounding box with them as they
+  travel, so the hit group reads as one unit rather than a loose cluster of
+  gems. The outline's own left/right/top/bottom edges are each projected
+  through the same per-point back-projection formula used for individual pad
+  positions (linear back-to-front interpolation), not scaled as one shape by
+  the note's own eased `noteScale` curve — `noteScale` describes how a single
+  note gem grows (cubic-eased, already 43-68% of its own target size even at
+  progress 0), which doesn't describe how far apart independent pad
+  trajectories have actually spread at a given progress. Scaling the whole
+  shape by `noteScale` left the outline mismatched against where the actual
+  notes were before they neared the threshold — oversized and out of step in
+  the distance, only lining up correctly right near the target. Bounding by
+  the same linear edge interpolation as the notes themselves keeps the
+  outline correctly sized and positioned at every point along the approach,
+  since it's the same affine transform applied to the grid's own bounding
+  edges instead of a mismatched curve. It grows into alignment with the real
+  grid by the threshold, in step with the note gems. The outline is a filled
+  thin-frame shape (`buildFrameGeometry` — an outer
+  rounded rect with a smaller rounded rect hole cut out), not a stroked
+  `Line`: WebGL clamps `LineBasicMaterial.linewidth` to 1px on most
+  platforms, so a genuinely visible border needs real geometry. Per-pad
+  outlines (one per cell, each pad's own target color) were tried first but
+  removed — once the single whole-group outline existed, the individual cell
+  outlines added visual noise without adding information. Only pad-type hits
+  draw this (pedal/trigger hits aren't part of the pad grid's own coordinate
+  space). Repeat and past-threshold notes don't draw this overlay — repeat
+  notes because it would be redundant with the
+  still-visible earlier note in the group, past-threshold notes because
+  they're already fading out.
+- The outline mesh shares note gems' own `renderOrder` (10, matching
+  body/face) rather than a fixed lower value. Three.js only sorts transparent
+  objects by camera distance *within* the same `renderOrder` — across
+  different `renderOrder`s it draws strictly in `renderOrder` sequence
+  regardless of depth. A fixed lower `renderOrder` on the outline meant every
+  outline (any hit group, any distance) drew before every gem, so a nearer
+  hit group's outline could get painted over by a farther, still-approaching
+  hit group's gem (drawn later in submission order, but actually farther
+  away) instead of correctly occluding it. Sharing `renderOrder` lets
+  Three.js's normal per-frame distance sort handle outlines and gems
+  together, so nearer objects correctly occlude farther ones regardless of
+  which hit group they belong to.
+- Per-pad tunnel guide lines (the frustum from each pad toward the vanishing
+  point) are drawn once for the whole grid's bounding box, not once per pad
+  cell — one line-per-pad cluttered the highway with a full guide frustum for
+  every single cell. The shared guide-line material sets `depthWrite: false`
+  and a low `renderOrder` (1, well under note gems' 10/11) so it always draws
+  behind incoming notes instead of z-fighting/poking through them.
+- A hit event counts as a repeat of the immediately previous group when its
+  own surface was also present in that previous group - per surface, not per
+  whole-group composition (`groupHitEvents` in `03-projection.js`). A steady
+  repeating hi-hat stays marked repeat even the moment another piece (e.g. a
+  snare) joins it or drops back out alongside it: `1. hihat(new) 2.
+  hihat(repeat) 3. hihat(repeat)+snare(new) 4. hihat(repeat) 5. snare(new) 6.
+  hihat(new)` - steps 3-4 show a joining/leaving second piece not
+  interrupting the hi-hat's own streak, while step 6 shows the check is
+  against the *immediately previous* group specifically (snare-only at step
+  5), not "the last group this piece itself appeared in" (which would've
+  been step 4). Repeat members render as the same gem shape at reduced
+  body/face opacity (0.24 body / 0.2 face - bumped up from an earlier, more
+  transparent 0.14/0.1 pass that read as too faint) instead of the normal
+  filled gem — pad-type events only; `placeNote`'s `isRepeat` is gated on
+  `event.type === 'pad'`, so pedal/trigger gems always render at full
+  opacity regardless of their own `repeatedFromPreviousGroup` value. The
+  faded-repeat cue is a pad-grid-pattern-recognition aid; it didn't add much
+  for the single top/bottom pedal bars or side/external trigger surfaces,
+  which don't form a recognizable multi-cell pattern the way pads do. (A
+  whole-group-set-equality version of this check — where any
+  membership change, including an unrelated pedal joining/leaving, reset
+  every member in the group to "not repeat" — was tried in between and
+  rejected as over-eager for exactly the joining/leaving-second-piece case
+  above.)
+- The layout-preview outline (`placeLayoutPreview`, only ever drawn for
+  pad-type events) reuses this same per-surface `repeatedFromPreviousGroup`
+  flag directly — there's no separate pad-only variant of it. Pad surface ids
+  (`pad:<id>`) are never shared with pedal/trigger surface ids, so for a
+  pad-type event, "was my surface in the previous group's full surface set"
+  and "...in the previous group's pad-only subset" are provably the same
+  question with the same answer under a per-surface check — unlike under the
+  rejected whole-set-equality version, where a pedal joining/leaving *did*
+  change the whole-group answer even though it never touched the pad's own
+  membership. (An earlier `padSetRepeatedFromPreviousGroup` field existed
+  specifically to give the outline pedal-blindness the whole-set check
+  didn't have; it became redundant with the switch to per-surface checking
+  and was removed.)
+- The layout-preview outline fades linearly from `LAYOUT_PREVIEW_GROUP_OPACITY`
+  (0.45, its peak, while still far away) down to fully 0 by the time it
+  reaches the target (`opacity = LAYOUT_PREVIEW_GROUP_OPACITY * (1 -
+  scaleProgress)` in `placeLayoutPreview`), rather than staying at a flat
+  opacity all the way to the threshold.
+- Kick screen shake is reduced to roughly half the previous magnitude and
+  duration so feedback reads as an accent instead of dominating the view.
+- `NOTE_SPEED` raised from 7.25 to 11.0 as an experiment against high-hit-
+  density charts where notes were visually running together. This is a
+  purely spatial knob — it controls how many world units of depth correspond
+  to one second of chart-time gap between notes, spreading close-together
+  hits further apart in 3D space so they read as visually distinct instead of
+  overlapping. It does not by itself change how much real reaction time a
+  note is visible for.
+- Reaction-time lookahead is no longer a flat seconds value — it's expressed
+  in beats (`NOTE_AHEAD_BEATS = 2.99`, chosen as "about 3 beats" without
+  risking an edge-case hit group right at the 3-beat boundary reading as
+  still-resolving) and converted to seconds from the chart's own local tempo
+  each frame (`updateNoteAheadFromTempo`, using the two `bundle.beats`
+  entries bracketing the current playhead — so it follows tempo changes
+  through the song rather than assuming one fixed BPM). Falls back to a flat
+  `NOTE_AHEAD_FALLBACK_SEC` (2.0s, matching the previous flat value) when the
+  chart has no usable beat grid (fewer than 2 beats — e.g. no
+  `song_timeline`). At 139 BPM this works out to ~1.29s, roughly a third
+  less than the previous flat 2.0s, thinning on-screen note density
+  accordingly on dense, faster charts while staying proportionally longer on
+  slower ones.
+- Because `NOTE_AHEAD_BEATS`'s seconds equivalent now varies with tempo, a
+  note's growth-curve progress (`placeNote`'s `rawProgress`) is normalized
+  against a per-frame `activeNoteSpawnDepth` (`activeNoteAheadSec *
+  NOTE_SPEED`) instead of the fixed `TUNNEL_DEPTH` — otherwise a note would
+  pop in partway grown (spawn depth < `TUNNEL_DEPTH`) or sit static in the
+  distance before animating (spawn depth > `TUNNEL_DEPTH`) whenever the
+  current tempo didn't happen to match the one `TUNNEL_DEPTH` was tuned for.
+  `TUNNEL_DEPTH` itself stays fixed — it's now purely cosmetic, sizing only
+  the guide-line wireframe and the camera's look-at target, decoupled from
+  where notes actually spawn.
 
 Phase 8, post-MVP: Add MIDI/scoring only if needed. If this plugin takes ownership of input or scoring later, connect to the core `midi-input` domain, mirror `drum_highway_3d` MIDI-to-piece behavior, implement hit/miss matching by routed pad/pedal source or render surface rather than raw MIDI note or original piece id, then consider `note-detection`, stats, progression, synth feedback, and scoring diagnostics.
 

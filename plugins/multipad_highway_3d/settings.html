@@ -25,7 +25,7 @@
                         class="mt-1 w-full bg-dark-700 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300 outline-none">
                 </label>
             </div>
-            <div id="multipad-h3d-custom-grid" class="select-none touch-none"></div>
+            <div id="multipad-h3d-custom-grid" class="select-none"></div>
         </div>
 
         <div class="border-t border-gray-800 pt-4">
@@ -149,7 +149,6 @@
         let padPieces = [];
         let pedalPieces = [];
         let pieceColors = {};
-        let dragTarget = null;
 
         function friendly(piece) { return FRIENDLY[piece] || piece; }
         function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -303,24 +302,14 @@
                         ? 'bg-sky-900/50 border-sky-600 text-sky-100'
                         : 'bg-dark-700 border-gray-800 text-gray-600');
                     btn.textContent = pad ? String(row * profile.padProfile.cols + col + 1) : '';
-                    btn.onpointerdown = (ev) => {
-                        ev.preventDefault();
-                        dragTarget = !getPadAt(row, col);
-                        setPadActive(row, col, dragTarget);
+                    btn.onclick = () => {
+                        setPadActive(row, col, !getPadAt(row, col));
                         render();
-                    };
-                    btn.onpointerenter = () => {
-                        if (dragTarget === null) return;
-                        setPadActive(row, col, dragTarget);
-                        render();
+                        saveProfile();
                     };
                     el.appendChild(btn);
                 }
             }
-            document.onpointerup = () => {
-                if (dragTarget !== null) saveProfile();
-                dragTarget = null;
-            };
         }
         function renderPads() {
             const el = document.getElementById('multipad-h3d-pads');

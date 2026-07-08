@@ -65,6 +65,22 @@ but default fallback behavior is applied by the routing step.
 Pad cells are positioned visually in the layout grid. Row/column wording is
 reserved for accessibility labels.
 
+## Development
+
+`screen.js` is a **generated file** — the plugin loader still serves and
+executes it as the single script named in `plugin.json`, but it's authored as
+five files under `src/` (`01-constants.js`, `02-profiles.js`,
+`03-projection.js`, `04-renderer.js`, `05-api.js`). Edit the file matching the
+section you're touching, then rebuild:
+
+```sh
+plugins/multipad_highway_3d/build.sh
+```
+
+Commit the regenerated `screen.js` alongside your `src/` changes — CI's
+`multipad-h3d-js-fresh` job rebuilds and diffs it, the same way the repo
+root's `tailwind-fresh` job guards `static/tailwind.min.css`.
+
 ## Tests
 
 ```sh

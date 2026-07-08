@@ -305,6 +305,11 @@ test('surface layout renders every accepted pedal and trigger surface', () => {
     const rightEdge = byKey.get('external-right-edge');
     const leftOutline = byKey.get('outline-left');
     const rightOutline = byKey.get('outline-right');
+    const topOutline = byKey.get('outline-top');
+    const bottomOutline = byKey.get('outline-bottom');
+    assert.equal(topOutline.x, bottomOutline.x);
+    assert.equal(topOutline.w, bottomOutline.w);
+    assert.equal(topOutline.h, bottomOutline.h);
     assert.equal(leftCenter.shape, 'circle');
     assert.equal(leftEdge.shape, 'ring');
     assert.equal(rightCenter.shape, 'circle');
@@ -561,7 +566,7 @@ test('chart projection normalizes hits, sorts by time, and preserves piece ident
     assert.notEqual(hihatEvents[0].piece, hihatEvents[1].piece);
 });
 
-test('hit groups collect same-window pad hits and pedal surface pulses', () => {
+test('hit groups collect same-window pad hits and pedal route surfaces', () => {
     const t = loadFactory().__test;
     const projected = t.projectDrumTab({
         hits: [
@@ -581,6 +586,46 @@ test('hit groups collect same-window pad hits and pedal surface pulses', () => {
     assert.deepEqual(plain(projected.hitGroups[0].pedalSurfaces.sort()), ['outline-bottom', 'outline-top']);
     assert.equal(projected.hitGroups[1].hitEvents[0].piece, 'ride');
     assert.equal(projected.hitEvents[0].hitGroupId, 0);
+});
+
+test('hit events mark repeat per surface against the immediately previous group, independent of other members', () => {
+    const t = loadFactory().__test;
+    const projected = t.projectDrumTab({
+        hits: [
+            // G1 t=0: hi-hat alone - first group, nothing to repeat.
+            { t: 0, p: 'hh_closed' },
+            // G2 t=0.2: hi-hat alone again - genuine repeat.
+            { t: 0.2, p: 'hh_closed' },
+            // G3 t=0.4: snare joins. The hi-hat's own surface was still in
+            // the previous group, so it stays "repeat" even though the
+            // group's composition changed; snare is new, so it isn't.
+            { t: 0.4, p: 'hh_closed' },
+            { t: 0.4, p: 'snare' },
+            // G4 t=0.6: back to hi-hat alone. The hi-hat was in G3's set too,
+            // so it's still "repeat" - a second piece joining and leaving
+            // doesn't interrupt the hi-hat's own streak.
+            { t: 0.6, p: 'hh_closed' },
+            // G5 t=0.8: snare alone. Snare wasn't in G4's set (just hi-hat),
+            // so it's not a repeat.
+            { t: 0.8, p: 'snare' },
+            // G6 t=1.0: hi-hat alone. Hi-hat wasn't in G5's set (just
+            // snare), so it's not a repeat either - the immediately previous
+            // group is what's checked, not "the last group this piece
+            // itself appeared in".
+            { t: 1.0, p: 'hh_closed' },
+        ],
+    }, { hitGroupWindowSec: 0.008 });
+
+    const repeatStateByTimePiece = Object.fromEntries(
+        projected.hitEvents.map(event => [`${event.t}:${event.piece}`, !!event.repeatedFromPreviousGroup])
+    );
+    assert.equal(repeatStateByTimePiece['0:hh_closed'], false);
+    assert.equal(repeatStateByTimePiece['0.2:hh_closed'], true);
+    assert.equal(repeatStateByTimePiece['0.4:hh_closed'], true);
+    assert.equal(repeatStateByTimePiece['0.4:snare'], false);
+    assert.equal(repeatStateByTimePiece['0.6:hh_closed'], true);
+    assert.equal(repeatStateByTimePiece['0.8:snare'], false);
+    assert.equal(repeatStateByTimePiece['1:hh_closed'], false);
 });
 
 test('custom profile fallbacks route missing pieces without redefining drum ids', () => {
