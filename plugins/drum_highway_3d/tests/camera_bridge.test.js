@@ -56,6 +56,13 @@ test('_resolveFreeCam: throw-safe on panelIndexFor → falls back to global', ()
     assert.equal(__test._resolveFreeCam({}, ss, { 0: {} }, g), g);
 });
 
+test('_resolveFreeCam: NaN/invalid panel index → falls back to global', () => {
+    const { __test } = load();
+    const g = { id: 'global' };
+    assert.equal(__test._resolveFreeCam({}, { panelIndexFor: () => NaN }, { 0: {} }, g), g);
+    assert.equal(__test._resolveFreeCam({}, { panelIndexFor: () => -1 }, { 0: {} }, g), g);
+});
+
 test('_ssApi: null when neither global set; slopsmith alias; feedBack canonical wins', () => {
     const { window, __test } = load();
     assert.equal(__test._ssApi(), null);

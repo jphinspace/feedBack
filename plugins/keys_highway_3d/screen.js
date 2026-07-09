@@ -1604,15 +1604,24 @@
      *  Camera Director bridge resolver (pure — exported via createFactory.__test)
      * ====================================================================== */
 
-    // Resolve the active splitscreen API, defensive on the global-name rename in
-    // flight (feedBackSplitscreen is canonical; slopsmithSplitscreen is the legacy
-    // alias). Returns null when splitscreen isn't present.
+    /**
+     * The active splitscreen API, defensive on the global-name rename in flight
+     * (feedBackSplitscreen is canonical; slopsmithSplitscreen is the legacy alias).
+     * @returns {object|null} the splitscreen API, or null when not present
+     */
     function _ssApi() { return window.feedBackSplitscreen || window.slopsmithSplitscreen || null; }
 
-    // Given the splitscreen API, THIS window's per-panel camera map, and the
-    // global camera, return this panel's camera under splitscreen, else the
-    // global, else null (Camera Director absent → 100% stock framing). Throw-safe
-    // on panelIndexFor so a misbehaving splitscreen build can't break framing.
+    /**
+     * Resolve the Camera Director camera for a canvas: this panel's camera under
+     * splitscreen, else the global, else null (Camera Director absent → 100% stock
+     * framing). Throw-safe on panelIndexFor so a misbehaving splitscreen build
+     * can't break framing.
+     * @param {HTMLCanvasElement} canvas this renderer's highway canvas
+     * @param {object|null} ss the splitscreen API (see _ssApi)
+     * @param {object|null} panelsMap window.__h3dCamCtlPanels (per-panel cameras by index)
+     * @param {object|null} globalCam window.__h3dCamCtl (single global camera)
+     * @returns {object|null} the resolved free-camera bridge, or null
+     */
     function _resolveFreeCam(canvas, ss, panelsMap, globalCam) {
         if (panelsMap && ss && typeof ss.panelIndexFor === 'function') {
             try {

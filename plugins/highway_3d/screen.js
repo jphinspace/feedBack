@@ -2595,24 +2595,36 @@
     }
     const FRET_NUMBER_GHOST_SCOPE_IDS = ['chords', 'all'];
 
+    /**
+     * localStorage panel key for per-panel background settings ('main' or
+     * 'panel<index>'). Defensive on the splitscreen global-name rename in flight,
+     * and throw-safe on panelIndexFor — same as _freeCamFor — so a misbehaving
+     * splitscreen build can't take down background-settings resolution. Only a
+     * non-negative integer index yields a 'panel<N>' key; anything else (null,
+     * NaN, negative, non-integer) falls back to 'main' so a bad index can never
+     * mint a bogus "panelNaN"-style key.
+     * @param {HTMLCanvasElement} canvas this renderer's highway canvas
+     * @returns {string} 'main' or 'panel<index>'
+     */
     function _bgPanelKey(canvas) {
-        // Defensive on the splitscreen global name (rename in flight) AND throw-safe
-        // on panelIndexFor — same as _freeCamFor — so a misbehaving splitscreen
-        // build can't take down background-settings resolution. Falls back to 'main'.
         const ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
         let idx = null;
         if (ss && typeof ss.panelIndexFor === 'function') {
             try { idx = ss.panelIndexFor(canvas); } catch (e) { idx = null; }
         }
-        return (idx == null) ? 'main' : 'panel' + idx;
+        return (Number.isInteger(idx) && idx >= 0) ? 'panel' + idx : 'main';
     }
 
-    // Camera Director bridge resolver. Prefers THIS panel's per-panel camera
-    // under splitscreen (window.__h3dCamCtlPanels[panelIndex]) and falls back to
-    // the single global (window.__h3dCamCtl); returns null when Camera Director
-    // is absent → 100% stock framing. Defensive on the splitscreen global name
-    // (rename in flight: feedBackSplitscreen vs slopsmithSplitscreen). Mirrors
-    // the panel resolution in _bgPanelKey.
+    /**
+     * Camera Director bridge resolver. Prefers THIS panel's per-panel camera under
+     * splitscreen (window.__h3dCamCtlPanels[panelIndex]) and falls back to the
+     * single global (window.__h3dCamCtl); returns null when Camera Director is
+     * absent → 100% stock framing. Defensive on the splitscreen global-name rename
+     * in flight (feedBackSplitscreen vs slopsmithSplitscreen); throw-safe on
+     * panelIndexFor. Mirrors the panel resolution in _bgPanelKey.
+     * @param {HTMLCanvasElement} canvas this renderer's highway canvas
+     * @returns {object|null} the resolved free-camera bridge, or null
+     */
     function _freeCamFor(canvas) {
         const map = window.__h3dCamCtlPanels;
         if (map) {
