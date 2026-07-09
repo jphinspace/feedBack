@@ -2632,7 +2632,10 @@
             if (ss && typeof ss.panelIndexFor === 'function') {
                 try {
                     const i = ss.panelIndexFor(canvas);
-                    if (i != null && map[i]) return map[i];
+                    // Only a non-negative integer indexes the map (same hardening
+                    // as _bgPanelKey) — a non-int / negative / string index must not
+                    // resolve an unintended/inherited property; fall through then.
+                    if (Number.isInteger(i) && i >= 0 && map[i]) return map[i];
                 } catch (e) { /* ignore */ }
             }
         }

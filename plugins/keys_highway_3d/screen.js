@@ -1626,7 +1626,10 @@
         if (panelsMap && ss && typeof ss.panelIndexFor === 'function') {
             try {
                 const i = ss.panelIndexFor(canvas);
-                if (i != null && panelsMap[i]) return panelsMap[i];
+                // Only a non-negative integer indexes the panel map — a non-int /
+                // negative / string index (or a prototype key) must not resolve an
+                // unintended/inherited property; fall through to the global then.
+                if (Number.isInteger(i) && i >= 0 && panelsMap[i]) return panelsMap[i];
             } catch (e) { /* ignore */ }
         }
         return globalCam || null;
