@@ -2022,15 +2022,6 @@
         const { cols, rowH } = measureGeom();
         const total = state.total || 0;
         const rows = Math.ceil(total / Math.max(1, cols));
-        // Only WRITE sizer.style.height when the value actually changes. Every
-        // call below reads getBoundingClientRect() (_sizerTopInScroller) to map
-        // scrollTop → window range — a same-value style write still dirties
-        // layout, forcing that read into a synchronous reflow. macOS trackpad
-        // scrolling fires a 'scroll' event on nearly every animation frame for
-        // the whole gesture (even slow, precise, no-lift-off movement) — unlike
-        // keyboard key-repeat's sparser ~20-30/sec — so this write-then-read
-        // was a forced-layout tax paid on almost every frame of any trackpad
-        // scroll, independent of how far the window actually moved.
         const sizerHeightPx = rows * rowH;
         if (state.sizerHeightPx !== sizerHeightPx) {
             sizer.style.height = sizerHeightPx + 'px';
