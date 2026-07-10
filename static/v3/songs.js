@@ -2022,10 +2022,12 @@
         const { cols, rowH } = measureGeom();
         const total = state.total || 0;
         const rows = Math.ceil(total / Math.max(1, cols));
-        const sizerHeightPx = rows * rowH;
-        if (state.sizerHeightPx !== sizerHeightPx) {
-            sizer.style.height = sizerHeightPx + 'px';
-            state.sizerHeightPx = sizerHeightPx;
+        if (total > 0) {
+            const sizerHeightPx = rows * rowH;
+            if (state.sizerHeightPx !== sizerHeightPx) {
+                sizer.style.height = sizerHeightPx + 'px';
+                state.sizerHeightPx = sizerHeightPx;
+            }
         }
         if (total === 0) {
             grid.innerHTML = _emptyLibraryHtml(); grid.style.top = '0px';
