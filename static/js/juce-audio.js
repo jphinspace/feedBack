@@ -614,9 +614,22 @@ import { S } from './player-state.js';
     let _lbStream = null, _lbCtx = null, _lbTap = null, _lbPageMuted = false;
     let _loopbackUnavailable = false;   // sticky: probe once, then fall back
     async function _engageLoopback() {
+        // Chromium's default capture pipeline treats the audio track as a
+        // VOICE call: echo cancellation + noise suppression + AGC + mono
+        // downmix. On music that is the "tin can" sound (tester 2026-07-12).
+        // Request the raw stereo path explicitly — every constraint here is
+        // best-effort (ideal-valued), so unsupported ones degrade silently
+        // rather than failing the capture.
         const stream = await navigator.mediaDevices.getDisplayMedia({
             video: true,
-            audio: { suppressLocalAudioPlayback: true },
+            audio: {
+                suppressLocalAudioPlayback: true,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 2,
+                sampleRate: 48000,
+            },
         });
         for (const t of stream.getVideoTracks()) t.stop();   // required, unused
         const track = stream.getAudioTracks()[0];
@@ -637,8 +650,19 @@ import { S } from './player-state.js';
                 _lbPageMuted = (await api.setPageMuted(true)) === true;
             }
             if (window._asioDiagEnabled?.()) {
+                // Full track settings: shows whether the raw-audio constraints
+                // (no EC/NS/AGC, stereo) actually took — a track that still
+                // reports echoCancellation=true or channelCount=1 explains
+                // "tin can" quality reports directly from the log.
+                const s = track.getSettings?.() || {};
                 console.log('[asio-diag] loopback: suppressed=', suppressed,
-                    'pageMuted=', _lbPageMuted, 'rate=', _lbCtx.sampleRate);
+                    'pageMuted=', _lbPageMuted, 'rate=', _lbCtx.sampleRate,
+                    'track=', JSON.stringify({
+                        sampleRate: s.sampleRate, channelCount: s.channelCount,
+                        echoCancellation: s.echoCancellation,
+                        noiseSuppression: s.noiseSuppression,
+                        autoGainControl: s.autoGainControl,
+                    }));
             }
             await api.setRendererBus(true, 1.0);
             tap.active = true;
