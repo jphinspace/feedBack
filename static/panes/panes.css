@@ -1,19 +1,42 @@
 /* fee[dB]ack — detachable panes.
  *
- * Hand-authored (not Tailwind-scanned) so a runtime-installed plugin can use the
- * chip and the dock without shipping its own stylesheet — the same reason
- * .fb-selectable is hand-authored in core CSS.
+ * Hand-authored (not Tailwind-scanned) so a runtime-installed plugin gets the chip
+ * and the dock without shipping its own stylesheet — the same reason .fb-selectable
+ * is hand-authored in core CSS.
  *
  * Z-index: the dock is a child of <body>, so it is NOT on the ladder from
  * docs/plugin-v3-ui.md (transport 20, rail 30, popovers 40) — those numbers live
  * *inside* #player's stacking context, and #player itself is `position:fixed;
- * z-index:100` covering the viewport. A dock below 100 is invisible on the
- * player screen, which is the one screen panes exist for.
- *
- * So: body-level ladder. #player 100 < dock 110 < toasts 120 < modals 200.
- * A pane is persistent furniture that outranks the player, but never outranks a
- * notification or an interruption.
+ * z-index:100` covering the viewport. A dock below 100 is invisible on the one
+ * screen panes exist for. Body-level ladder: #player 100 < dock 110 < toasts 120
+ * < modals 200.
  */
+
+/* ── The popped-out element ──────────────────────────────────────────────────
+ *
+ * The single most important rule in this file.
+ *
+ * A plugin's panel is almost always a fixed overlay pinned to a corner of the app:
+ * `position:fixed; top:72px; right:18px; width:288px; z-index:99999`, with a drop
+ * shadow and a max-height sized against the viewport. Inside a dock card, or alone
+ * in a 320px window, every one of those is wrong — it would float 72px down from
+ * the top of its own window, still 288px wide, still casting a shadow over nothing.
+ *
+ * So we neutralise PLACEMENT and nothing else. Colours, borders, radius, padding,
+ * fonts, the panel's own internal layout: all untouched, because the whole promise
+ * of this feature is that what you popped out is what you get. */
+.fb-paned {
+    position: static !important;
+    inset: auto !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    z-index: auto !important;
+    box-shadow: none !important;
+    /* A panel hidden until its launcher is clicked is being shown on purpose now. */
+    display: block !important;
+}
 
 /* ── The pop-out chip ────────────────────────────────────────────────────── */
 
@@ -24,7 +47,6 @@
     justify-content: center;
     width: 1.5rem;
     height: 1.5rem;
-    margin-left: auto;                  /* right-align inside a flex header */
     border: 1px solid rgba(51, 65, 85, .7);
     border-radius: .4rem;
     background: rgba(30, 41, 59, .8);
@@ -39,18 +61,14 @@
     border-color: #4080e0;
     background: rgba(64, 128, 224, .18);
 }
-.fb-pane-chip:focus-visible {
-    outline: 2px solid #4080e0;
-    outline-offset: 1px;
-}
+.fb-pane-chip:focus-visible { outline: 2px solid #4080e0; outline-offset: 1px; }
 
-/* The dialog the chip lives in, while its pane is popped out. A dedicated class
-   rather than `.hidden`/[hidden]: the dialogs we attach to (the mixer popover,
-   the rail popovers) toggle those themselves, and two owners of one class is a
-   bug waiting to happen. */
+/* The panel, while its pane is popped out. A dedicated class rather than
+   .hidden/[hidden]: the panels we attach to toggle those themselves, and two owners
+   of one class is a bug waiting for a bad day. */
 .fb-pane-detached { display: none !important; }
 
-/* What the user sees in the dialog's place. */
+/* What the user sees in the panel's place. */
 .fb-pane-stub {
     display: inline-flex;
     align-items: center;
@@ -64,17 +82,14 @@
     cursor: pointer;
     transition: background .15s, border-color .15s;
 }
-.fb-pane-stub:hover {
-    background: rgba(64, 128, 224, .18);
-    border-color: #4080e0;
-}
+.fb-pane-stub:hover { background: rgba(64, 128, 224, .18); border-color: #4080e0; }
 .fb-pane-stub-glyph { font-size: .85rem; }
 
 /* ── The dock ────────────────────────────────────────────────────────────── */
 
 .fb-pane-dock {
     position: fixed;
-    top: 4.5rem;                        /* clear of the topbar */
+    top: 4.5rem;
     right: 1rem;
     bottom: 1rem;
     z-index: 110;                       /* above #player (100), below toasts (120) */
@@ -85,9 +100,8 @@
     gap: .6rem;
     overflow-y: auto;
     overflow-x: hidden;
-    /* The dock is a frame around cards, not a surface — pointer events belong to
-       the cards, so the empty space below them never eats a click meant for the
-       highway. */
+    /* A frame around cards, not a surface — the empty space below them must never
+       eat a click meant for the highway. */
     pointer-events: none;
     scrollbar-width: thin;
 }
@@ -141,13 +155,9 @@
 .fb-pane-card-btn:hover { background: rgba(51, 65, 85, .7); color: #e2e8f0; }
 .fb-pane-card-btn:focus-visible { outline: 2px solid #4080e0; outline-offset: 1px; }
 
-.fb-pane-card-body {
-    padding: .75rem;
-    font-size: .8rem;
-    color: #cbd5e1;
-}
+.fb-pane-card-body { overflow: auto; }
 
-/* focus(id) — brief highlight so a re-open of an already-open pane says so
+/* focus(id) — a brief highlight, so re-opening an already-open pane says so
    instead of appearing to do nothing. */
 .fb-pane-card.is-flash { animation: fb-pane-flash .7s ease-out; }
 @keyframes fb-pane-flash {
@@ -158,9 +168,10 @@
     .fb-pane-card.is-flash { animation: none; }
 }
 
-/* ── The pop-out window (static/panes/pane.html) ─────────────────────────── */
-/* This document loads no Tailwind and no app stylesheet — it is the whole page,
-   so it carries its own reset. Keep it tiny; a pane window must boot instantly. */
+/* ── The pop-out window (static/panes/pane.html) ─────────────────────────────
+ *
+ * The window's own chrome — everything INSIDE it is the adopted element, styled by
+ * the app's stylesheets, which the host copies into this document. */
 
 html.fb-pane-window,
 html.fb-pane-window body {
@@ -168,88 +179,10 @@ html.fb-pane-window body {
     padding: 0;
     height: 100%;
     background: #0f172a;
-    color: #cbd5e1;
-    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
-    font-size: 14px;
-    -webkit-user-select: none;
-    user-select: none;               /* chrome isn't selectable; .fb-selectable opts content back in */
 }
-html.fb-pane-window body {
-    display: flex;
-    flex-direction: column;
-}
-.fb-pane-window-head {
-    flex: 0 0 auto;
-    padding: .55rem .8rem;
-    border-bottom: 1px solid rgba(51, 65, 85, .6);
-    background: rgba(30, 41, 59, .6);
-    -webkit-app-region: drag;        /* the desktop host opens this frameless */
-}
-.fb-pane-window-title {
-    font-size: .8rem;
-    font-weight: 600;
-    color: #e2e8f0;
-}
-.fb-pane-window-status {
-    margin: 0;
-    padding: 1.25rem;
-    color: #64748b;
-    font-size: .8rem;
-    text-align: center;
-}
-.fb-pane-window-body {
+html.fb-pane-window body { display: flex; flex-direction: column; overflow: hidden; }
+#fb-pane-root {
     flex: 1 1 auto;
-    overflow-y: auto;
-    padding: .85rem;
+    overflow: auto;
+    padding: .6rem;
 }
-
-/* Core CSS defines this for the app; a pane window loads no app CSS, so repeat
-   it here. Same rule, same intent: copy-worthy text stays copyable. */
-.fb-selectable, .fb-selectable * { -webkit-user-select: text; user-select: text; }
-
-/* ── Shared widgets for built-in panes ───────────────────────────────────── */
-
-.fb-pane-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: .75rem;
-    padding: .2rem 0;
-}
-.fb-pane-key {
-    color: #94a3b8;
-    font-size: .7rem;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    white-space: nowrap;
-}
-.fb-pane-val {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: .78rem;
-    color: #e2e8f0;
-    text-align: right;
-}
-.fb-pane-val.is-num { font-variant-numeric: tabular-nums; }
-.fb-pane-dim { color: #64748b; font-size: .72rem; }
-
-.fb-pane-bar {
-    position: relative;
-    height: .35rem;
-    border-radius: 999px;
-    background: rgba(51, 65, 85, .8);
-    overflow: hidden;
-}
-.fb-pane-bar-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 100%;
-    border-radius: inherit;
-    background: #4080e0;
-    transform: scaleX(0);
-    transform-origin: left;
-    /* scaleX is compositor-only; a width write would re-run layout every frame. */
-}
-.fb-pane-bar-fill.is-level { background: linear-gradient(90deg, #22c55e, #eab308 70%, #ef4444); }

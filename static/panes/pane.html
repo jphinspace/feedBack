@@ -3,26 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pane — fee[dB]ack</title>
+    <title>fee[dB]ack</title>
     <link rel="icon" href="/static/assets/favicon.png">
-    <!-- Deliberately minimal. This is NOT the app shell with a flag on it: no
-         highway, no library, no v3 shell, no <audio>, no Tailwind. A pane window
-         has nothing to hide, so it needs no anti-flash hack and boots in
-         milliseconds. Panes needing utility classes ship their own stylesheet via
-         the `styles` manifest key, exactly as they must in the main window. -->
+    <!-- Deliberately almost empty.
+
+         This document does not build a pane; it RECEIVES one. The opener moves the
+         real element in here with document.adoptNode() and copies the app's
+         stylesheets across, so the panel arrives complete — its own markup, its own
+         CSS, its own listeners, its own closures, still running the plugin's code
+         back in the main window.
+
+         So there is nothing to load, nothing to boot, and nothing to keep in step
+         with the app. Only panes.css, for the window chrome and the layout reset the
+         adopted element needs. -->
     <link rel="stylesheet" href="/static/panes/panes.css">
 </head>
 <body>
-    <header class="fb-pane-window-head">
-        <span id="pane-title" class="fb-pane-window-title">fee[dB]ack</span>
-    </header>
-    <p id="pane-status" class="fb-pane-window-status">Connecting…</p>
-    <main id="pane-root" class="fb-pane-window-body fb-selectable" hidden></main>
-
-    <!-- Order matters: the bridge defines the transport the runtime uses. Both are
-         classic scripts, so the pane's own script (injected by the runtime) sees
-         the same global scope it would in the main window. -->
-    <script src="/static/panes/pane-bridge.js"></script>
-    <script src="/static/panes/pane-runtime.js"></script>
+    <main id="fb-pane-root"></main>
 </body>
 </html>

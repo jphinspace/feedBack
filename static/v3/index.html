@@ -1317,29 +1317,15 @@
     <script defer src="/static/v3/interface-size-nudge.js"></script>
     <script defer src="/static/v3/feedbarcade.js"></script>
     <script defer src="/static/v3/player-chrome.js"></script>
-    <!-- Detachable panes. Strict order: the bridge defines the ctx contract, the
-         sampler and the manager build on it, hosts register themselves with the
-         manager, and the built-in panes register last (they call panes.register
-         + panes.attachChip at load). Everything here runs after app.js, so
-         window.feedBack and the capability bus already exist. -->
-    <script defer src="/static/panes/pane-bridge.js"></script>
-    <script defer src="/static/panes/pane-streams.js"></script>
+    <!-- Detachable panes. The manager first; then the hosts, which register
+         themselves with it; then the chip and the launcher, which drive it.
+         pane-desktop only does anything inside the desktop app. -->
     <script defer src="/static/panes/pane-manager.js"></script>
     <script defer src="/static/panes/pane-dock.js"></script>
     <script defer src="/static/panes/pane-window-host.js"></script>
-    <!-- Desktop host: registers above the browser pop-up host when the Electron
-         bridge is present (real BrowserWindow + system tray), and registers
-         nothing at all in a browser. -->
-    <script defer src="/static/panes/pane-desktop-host.js"></script>
-    <script defer src="/static/panes/pane-hub.js"></script>
+    <script defer src="/static/panes/pane-desktop.js"></script>
     <script defer src="/static/panes/pane-chip.js"></script>
-    <script defer src="/static/panes/pane-mirror.js"></script>
     <script defer src="/static/panes/pane-launcher.js"></script>
-    <script defer src="/static/panes/builtin/now-playing.js"></script>
-    <script defer src="/static/panes/builtin/mixer-pane.js"></script>
-    <!-- Last: registers panes declared in plugin manifests, so a plugin's pane is
-         openable from the rail or the tray without its screen ever being visited. -->
-    <script defer src="/static/panes/pane-plugins.js"></script>
     <script>
         // Navbar scroll effect
         window.addEventListener('scroll', () => {

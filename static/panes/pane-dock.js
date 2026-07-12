@@ -1,18 +1,19 @@
 /*
  * fee[dB]ack — pane dock (the in-window pane host).
  *
- * A right-edge stack of cards, one per open pane. Deliberately NOT a rail
- * popover: the rail is exclusive (player-chrome.js openPopFor closes the last
- * one before opening the next), which is precisely why you can't watch the
- * mixer while riding the camera. Cards here coexist.
+ * A right-edge stack of cards, one per open pane. Deliberately NOT a rail popover:
+ * the rail is exclusive (player-chrome.js's openPopFor closes the last one before
+ * opening the next), which is exactly why you cannot watch the mixer while riding
+ * the camera. Cards here coexist.
  *
- * Song-switch survival is structural, not defended. `#fb-pane-dock` is appended
- * to <body>, outside every `.screen`, so the per-song teardown never sees it —
- * and `playSong()` ends in `showScreen('player')`, whose id === 'player' short-
- * circuits the teardown branch anyway. Nothing to reset, nothing to re-mount.
+ * As everywhere in this system, the card holds the plugin's REAL element — moved,
+ * not copied. The dock is a frame; the panel inside it is the panel.
  *
- * Registers itself as the `dock` host at priority 0 — the floor. Whatever else
- * exists (an OS pane window), a pane can always land here.
+ * Song-switch survival is structural, not defended: #fb-pane-dock is a <body>
+ * child outside every .screen, so the per-song teardown never sees it.
+ *
+ * Registers as the `dock` host at priority 0 — the floor. Whatever else exists
+ * (an OS window), a pane can always land here, so opening one can never fail.
  */
 (function () {
     'use strict';
@@ -41,11 +42,10 @@
     }
 
     function _syncEmpty() {
-        const d = dock();
-        d.classList.toggle('is-empty', cards.size === 0);
+        dock().classList.toggle('is-empty', cards.size === 0);
     }
 
-    function mount(spec) {
+    function place(spec, el) {
         const card = document.createElement('section');
         card.className = 'fb-pane-card';
         card.dataset.paneId = spec.id;
@@ -56,8 +56,7 @@
 
         const title = document.createElement('span');
         title.className = 'fb-pane-card-title';
-        // textContent, not innerHTML — a pane title can come from a plugin
-        // manifest, i.e. from outside core.
+        // textContent, not innerHTML — a pane title comes from a plugin.
         title.textContent = spec.icon + ' ' + spec.title;
 
         const close = document.createElement('button');
@@ -72,20 +71,27 @@
         head.appendChild(close);
 
         const body = document.createElement('div');
-        body.className = 'fb-pane-card-body fb-selectable';
+        body.className = 'fb-pane-card-body';
+
+        // Same neutralisation as the window host: the panel was a fixed overlay
+        // pinned to a corner of the app, and inside a card that positioning is
+        // nonsense. .fb-paned unpins it and nothing else.
+        el.classList.add('fb-paned');
+        el.hidden = false;
+        body.appendChild(el);
 
         card.appendChild(head);
         card.appendChild(body);
         dock().appendChild(card);
         cards.set(spec.id, card);
         _syncEmpty();
-
-        // The pane mounts into the body, never the card — so it cannot reach
-        // (or accidentally destroy) the chrome that owns its close button.
-        return body;
     }
 
-    function unmount(id) {
+    function unplace(id, el) {
+        // Hand the element back unmarked. The manager returns it to its home right
+        // after this, and it must arrive as the plugin left it — a panel that
+        // stayed .fb-paned would come back with its own positioning stripped.
+        if (el) el.classList.remove('fb-paned');
         const card = cards.get(id);
         if (card) card.remove();
         cards.delete(id);
@@ -96,13 +102,13 @@
         const card = cards.get(id);
         if (!card) return;
         card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        // Re-trigger the flash even if the class is already there (repeat focus
-        // of the same card would otherwise be a no-op animation).
+        // Re-trigger the flash even if the class is still there — repeat focus of
+        // the same card would otherwise be a no-op animation.
         card.classList.remove('is-flash');
         void card.offsetWidth;
         card.classList.add('is-flash');
         setTimeout(() => card.classList.remove('is-flash'), 700);
     }
 
-    panes.registerHost({ id: 'dock', priority: 0, available: () => !!document.body, mount, unmount, focus });
+    panes.registerHost({ id: 'dock', priority: 0, available: () => !!document.body, place, unplace, focus });
 })();
