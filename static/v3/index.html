@@ -1327,6 +1327,10 @@
     <script defer src="/static/panes/pane-manager.js"></script>
     <script defer src="/static/panes/pane-dock.js"></script>
     <script defer src="/static/panes/pane-window-host.js"></script>
+    <!-- Desktop host: registers above the browser pop-up host when the Electron
+         bridge is present (real BrowserWindow + system tray), and registers
+         nothing at all in a browser. -->
+    <script defer src="/static/panes/pane-desktop-host.js"></script>
     <script defer src="/static/panes/pane-hub.js"></script>
     <script defer src="/static/panes/pane-chip.js"></script>
     <script defer src="/static/panes/pane-launcher.js"></script>
