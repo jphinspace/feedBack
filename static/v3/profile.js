@@ -232,7 +232,7 @@
         host.innerHTML =
             '<ol class="space-y-2">' + rows.map((s, i) => {
                 const acc = Number(s.best_accuracy) || 0;
-                const pct = Math.round(acc * 100);
+                const pct = Math.floor(acc * 100);
                 const score = Number(s.best_score) || 0;
                 return '<li data-fn="' + esc(s.filename) + '" class="flex items-center gap-3 cursor-pointer rounded-md px-2 py-1.5 hover:bg-fb-card transition">' +
                     '<span class="w-5 text-center text-fb-textDim font-semibold shrink-0">' + (i + 1) + '</span>' +

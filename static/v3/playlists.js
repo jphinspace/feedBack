@@ -73,7 +73,7 @@
             ? ' data-play-fn="' + esc(playFn) + '"' + (arrIdx != null ? ' data-play-arr="' + arrIdx + '"' : '')
             : '';
         const acc = (isAlbum && typeof opts.acc === 'number')
-            ? '<span class="text-xs font-bold shrink-0 ' + (opts.acc >= 0.9 ? 'text-fb-good' : opts.acc >= 0.5 ? 'text-fb-mid' : 'text-fb-low') + '">' + Math.round(opts.acc * 100) + '%</span>'
+            ? '<span class="text-xs font-bold shrink-0 ' + (opts.acc >= 0.9 ? 'text-fb-good' : opts.acc >= 0.5 ? 'text-fb-mid' : 'text-fb-low') + '">' + Math.floor(opts.acc * 100) + '%</span>'
             : '';
         const pin = (isAlbum && s.arrangement)
             ? '<span class="ml-2 text-[0.625rem] bg-fb-primary/20 text-fb-primary font-bold px-1.5 py-0.5 rounded-sm" title="Pinned arrangement">' + esc(s.arrangement) + '</span>' : '';
