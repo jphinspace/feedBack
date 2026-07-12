@@ -68,11 +68,33 @@
         } catch (e) { /* non-fatal */ }
     }
 
-    function _adopt(w, spec, el) {
+    // Wait for the REAL pane document.
+    //
+    // window.open() returns immediately, with an `about:blank` document that is
+    // already readyState 'complete'. Adopt into that and it works for a few
+    // milliseconds — and then /pane finishes loading, replaces the document, and
+    // takes the panel with it. The window is left blank and the element is gone.
+    //
+    // So we do not trust readyState, and we do not trust 'load' (which may have
+    // fired for about:blank before we could listen). We wait for the one thing that
+    // only exists in the document we actually want: pane.html's #fb-pane-root.
+    function _whenReady(w, onReady, onFail) {
+        const deadline = performance.now() + 10000;
+        const tick = () => {
+            if (w.closed) return;
+            let root = null;
+            try { root = w.document && w.document.getElementById('fb-pane-root'); }
+            catch (e) { root = null; }   // mid-navigation: the document is being swapped
+            if (root) { onReady(root); return; }
+            if (performance.now() > deadline) { onFail(new Error('the pane window never loaded')); return; }
+            setTimeout(tick, 25);
+        };
+        tick();
+    }
+
+    function _adopt(w, root, spec, el) {
         const doc = w.document;
         _copyStyles(doc);
-
-        const root = doc.getElementById('fb-pane-root') || doc.body;
         // The panel was almost certainly a fixed/absolute overlay pinned to a
         // corner of the app. In a window of its own that positioning is nonsense —
         // it would sit 72px from the top of a 380px window, still 288px wide, still
@@ -111,30 +133,22 @@
         wins.set(spec.id, w);
         _startReaper();
 
-        // The document may or may not have parsed yet. Both paths must work, and
-        // must not run twice — a double adopt would move the element into the
-        // window and then move it in again, firing the plugin's own observers for
-        // no reason.
-        let done = false;
-        const go = () => {
-            if (done || w.closed) return;
-            done = true;
-            try { _adopt(w, spec, el); }
+        _whenReady(w, (root) => {
+            try { _adopt(w, root, spec, el); }
             catch (e) {
                 console.error('[panes] failed to move', spec.id, 'into its window', e);
-                panes.close(spec.id);   // returns the element home
+                panes.close(spec.id);   // brings the element home
             }
-        };
-        if (w.document && w.document.readyState === 'complete') go();
-        else w.addEventListener('load', go, { once: true });
-
-        // The window is ours and must not outlive the document that owns the
-        // element inside it.
-        w.addEventListener('beforeunload', () => {
-            // Only react to the user closing the window — not to us closing it
-            // during a dock, which has already taken the element back.
-            if (wins.get(spec.id) === w && panes.isOpen(spec.id)) setTimeout(() => panes.close(spec.id), 0);
+        }, (err) => {
+            console.error('[panes]', spec.id, err);
+            panes.close(spec.id);       // never strand the element in a dead window
         });
+
+        // Note there is no 'beforeunload' listener on the popup. A listener added
+        // now would be attached to its throwaway about:blank window and thrown away
+        // with it when /pane loads. The `closed` poll above is what notices the user
+        // shutting a pane window — and it has to be, since a crashed renderer never
+        // gets to say goodbye either.
     }
 
     function unplace(id, el) {
