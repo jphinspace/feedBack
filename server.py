@@ -1715,3 +1715,13 @@ def index():
 def index_v3():
     # Retained as a back-compat alias for links minted while v3 was opt-in.
     return FileResponse(str(STATIC_DIR / "v3" / "index.html"))
+
+
+@app.get("/pane")
+def pane_host():
+    # The document a popped-out pane runs in. Deliberately NOT the app shell with
+    # a query flag (the splitscreen follower's approach): that loads the library,
+    # the highway and the whole v3 shell only to hide them again, and pays for it
+    # with anti-flash hacks in three files. This page loads the pane runtime and
+    # nothing else. See docs/plugin-panes.md.
+    return FileResponse(str(STATIC_DIR / "panes" / "pane.html"))

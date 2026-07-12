@@ -86,6 +86,12 @@
             persist: spec.persist !== false,          // default on; opt out with `persist: false`
             initialState: spec.initialState || {},
             defaultHost: spec.defaultHost || 'window',
+            // URL of the module the pane REALM loads to obtain this pane's
+            // mount(). A pane with no script can only ever be docked — it exists
+            // solely as a closure in this realm, and there is no honest way to
+            // move a closure across a window boundary. The window host declines
+            // such panes and the router falls back to the dock.
+            script: spec.script || null,
             mirrorGlobal: spec.mirrorGlobal || null,  // honoured by pane-mirror.js
             width: spec.width || 380,
             height: spec.height || 560,
@@ -97,15 +103,16 @@
     // unmount(id), focus(id) }`. Higher priority wins when a pane asks for a
     // host it can't have.
 
-    function _resolveHost(preferred) {
+    function _resolveHost(preferred, spec) {
         const wanted = hosts.get(preferred);
-        if (wanted && wanted.available()) return wanted;
-        // Fall back to the best host that IS available, preferring the highest
-        // priority. The dock registers at priority 0, so it is always the floor —
-        // a pane can never fail to open just because no window host exists.
+        if (wanted && wanted.available() && wanted.canHost(spec)) return wanted;
+        // Fall back to the best host that IS available and WILL take this pane,
+        // preferring the highest priority. The dock registers at priority 0 and
+        // accepts everything, so it is always the floor — a pane can never fail
+        // to open just because the window host is unavailable or declines it.
         let best = null;
         hosts.forEach((h) => {
-            if (!h.available()) return;
+            if (!h.available() || !h.canHost(spec)) return;
             if (!best || h.priority > best.priority) best = h;
         });
         return best;
@@ -133,8 +140,18 @@
         // Reopen where the user left it. Deferred a tick so a plugin can call
         // register() and attachChip() back-to-back — the chip must exist before
         // the pane opens or it has nothing to hide.
-        const remembered = _readJSON(HOSTS_KEY, {})[s.id];
-        if (remembered) setTimeout(() => { if (specs.has(s.id) && !open.has(s.id)) openPane(s.id, { host: remembered, remember: false }); }, 0);
+        //
+        // A host may refuse to be auto-restored: a browser blocks window.open()
+        // without a user gesture, so restoring a popped-out pane on page load
+        // would only ever produce a "pop-up blocked" toast. Such a pane comes back
+        // in the dock, and the chip pops it out again on the user's next click.
+        // (The desktop host has no such restriction and restores in place.)
+        let remembered = _readJSON(HOSTS_KEY, {})[s.id];
+        if (remembered) {
+            const h = hosts.get(remembered);
+            if (h && h.autoRestore === false) remembered = 'dock';
+            setTimeout(() => { if (specs.has(s.id) && !open.has(s.id)) openPane(s.id, { host: remembered, remember: false }); }, 0);
+        }
 
         return () => unregister(s.id);
     }
@@ -151,11 +168,30 @@
         if (!spec) { console.warn('[panes] open: no such pane:', id); return false; }
         if (open.has(id)) { focusPane(id); return true; }
 
-        const host = _resolveHost(opts.host || spec.defaultHost);
+        const host = _resolveHost(opts.host || spec.defaultHost, spec);
         if (!host) { console.error('[panes] open: no host available for', id); return false; }
 
         const state = B.createStateStore(spec.persist ? _readJSON(STATE_KEY(id), spec.initialState) : spec.initialState);
         if (spec.persist) state.subscribe(() => _scheduleSave(id, state));
+
+        // A REMOTE host (a pop-out window) runs the pane's mount() in its own
+        // realm — this realm never sees the pane's DOM and must not call mount()
+        // itself. All we own here is the authoritative state store; pane-hub.js
+        // serves the other realm from it.
+        if (host.remote) {
+            let handle;
+            try {
+                handle = host.mount(spec);
+            } catch (e) {
+                console.error('[panes] host', host.id, 'failed to open a window for', id, e);
+                return false;
+            }
+            if (!handle) return false;   // host already explained itself (popup blocked, etc.)
+            open.set(id, { spec, hostId: host.id, state, remote: true, handle });
+            if (opts.remember !== false) _rememberHost(id, host.id);
+            _emit('panes:opened', { id: id, host: host.id });
+            return true;
+        }
 
         let root;
         try {
@@ -199,13 +235,17 @@
         if (!entry) return false;
         open.delete(id);
 
-        // Order matters: the pane tears down its own DOM/listeners first, then
-        // ctx drops everything it handed out, then the host removes the shell.
-        // Reversing any of these hands the pane a root that has already been
-        // detached, or leaks the subscriptions its unmount() assumed it kept.
-        try { if (entry.spec.unmount) entry.spec.unmount(entry.root, entry.ctx); }
-        catch (e) { console.error('[panes] pane threw in unmount():', id, e); }
-        try { entry.ctx._dispose(); } catch (e) { console.error('[panes] ctx dispose threw:', id, e); }
+        // Order matters for a local pane: the pane tears down its own DOM and
+        // listeners first, then ctx drops everything it handed out, then the host
+        // removes the shell. Reversing any of these hands the pane a root that has
+        // already been detached, or leaks the subscriptions its unmount() assumed
+        // it kept. A remote pane's mount/unmount ran in the other realm and
+        // teardown goes with the window, so there is nothing to do but close it.
+        if (!entry.remote) {
+            try { if (entry.spec.unmount) entry.spec.unmount(entry.root, entry.ctx); }
+            catch (e) { console.error('[panes] pane threw in unmount():', id, e); }
+            try { entry.ctx._dispose(); } catch (e) { console.error('[panes] ctx dispose threw:', id, e); }
+        }
 
         const host = hosts.get(entry.hostId);
         try { if (host) host.unmount(id); } catch (e) { console.error('[panes] host', entry.hostId, 'threw in unmount:', id, e); }
@@ -256,7 +296,15 @@
         hosts.set(host.id, {
             id: host.id,
             priority: host.priority || 0,
+            // `remote: true` means the pane's mount() runs in ANOTHER JS realm.
+            // The manager then owns only the state store, and pane-hub.js serves
+            // the pane over the channel.
+            remote: !!host.remote,
+            // `autoRestore: false` — this host cannot be opened without a user
+            // gesture, so a pane remembered here comes back in the dock instead.
+            autoRestore: host.autoRestore !== false,
             available: typeof host.available === 'function' ? host.available : () => true,
+            canHost: typeof host.canHost === 'function' ? host.canHost : () => true,
             mount: host.mount,
             unmount: host.unmount,
             focus: host.focus,
@@ -281,6 +329,11 @@
         // a future out-of-tree host (a plugin shipping its own window shell) can
         // participate without a private import.
         registerHost,
+
+        // Host-internal. pane-hub.js serves a pop-out realm from the
+        // authoritative state store, which only lives here. Not part of the pane
+        // API — panes must never reach for this.
+        _entry: (id) => open.get(id) || null,
     };
 
     window.feedBack = window.feedBack || {};

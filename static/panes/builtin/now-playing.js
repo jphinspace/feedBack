@@ -40,6 +40,9 @@
         id: 'now_playing',
         title: 'Now Playing',
         icon: '🎵',
+        // How the pane REALM loads this same file to get the same mount(). A pane
+        // with no `script` can only ever be docked.
+        script: '/static/panes/builtin/now-playing.js',
         // Levels are transient; nothing here is worth remembering across a reload.
         persist: false,
 

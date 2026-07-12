@@ -94,6 +94,7 @@
         id: 'core_mixer',
         title: 'Mixer',
         icon: '🎚',
+        script: '/static/panes/builtin/mixer-pane.js',
         persist: false,
         // Faders come and go with the song (a song with no stems unregisters
         // them), so the pane has to hear about it. These ride on top of the

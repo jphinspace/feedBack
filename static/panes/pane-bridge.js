@@ -101,6 +101,7 @@
     // ── Local transport (main realm) ─────────────────────────────────────────
 
     const CALL_TIMEOUT_MS = 2100;   // matches core's own audio-mix calls
+    const RPC_TIMEOUT_MS = 10000;   // cross-realm deadline; generous, but never infinite
 
     function createLocalTransport(paneId) {
         return {
@@ -156,6 +157,162 @@
             toast(opts) {
                 if (window.fbNotify && typeof window.fbNotify.show === 'function') window.fbNotify.show(opts || {});
             },
+        };
+    }
+
+    // ── Envelopes ────────────────────────────────────────────────────────────
+    //
+    //   { v, type, paneId, hostId, seq, payload }
+    //
+    // type:  hello     pane→main   the pane realm booted; main replies `snapshot`
+    //        snapshot  main→pane   spec + state + current song. Resync-on-open, always.
+    //        state     both        { path, value }. Main is authoritative: a pane's
+    //                              write is a request; main applies it and echoes to
+    //                              every realm, so a losing write self-corrects.
+    //        rpc       pane→main   { seq, domain, command, payload }
+    //        rpc:reply main→pane   { seq, ok, result | error }
+    //        event     main→pane   a mirrored feedBack bus event { name, detail }
+    //        stream    main→pane   coalesced numerics (playhead, meters)
+    //        sub/unsub pane→main   drives the main-realm sampler's refcount
+    //        bye       both        clean teardown (main-closed / pane-closed)
+
+    function envelope(type, paneId, hostId, payload) {
+        return { v: PROTOCOL_VERSION, type: type, paneId: paneId, hostId: hostId, payload: payload };
+    }
+
+    function openChannel() {
+        if (typeof BroadcastChannel !== 'function') return null;
+        return new BroadcastChannel(CHANNEL_NAME);
+    }
+
+    // ── Remote transport (pane realm) ────────────────────────────────────────
+
+    const MAX_EXTRAP_S = 2.0;   // never extrapolate the clock further than this
+
+    function createRemoteTransport(paneId, hostId, channel) {
+        const listeners = new Map();     // event name -> Set<fn>
+        const streamSubs = new Map();    // stream name -> Set<fn>
+        const pending = new Map();       // rpc seq -> { resolve, reject, timer }
+        let rpcSeq = 0;
+        let song = null;
+
+        // The follower clock. The main window broadcasts the playhead every frame
+        // — but Chromium throttles a BACKGROUNDED window's rAF to ~1 Hz, and the
+        // main window is exactly what's in the background while the user looks at
+        // this pane. So we extrapolate between messages instead of rendering 1 Hz
+        // stutter: anchor + observedRate * elapsed.
+        //
+        // observedRate is measured from the broadcasts themselves (Δt / Δwall), so
+        // it tracks the speed slider without being told about it. Capped at
+        // MAX_EXTRAP_S so a dead main window decays into a frozen clock rather
+        // than a clock that confidently runs away.
+        let anchorT = 0, anchorWall = 0, observedRate = 1, playing = false, duration = 0;
+
+        function _onPlayhead(p) {
+            const now = performance.now();
+            if (anchorWall && p.playing && playing) {
+                const dt = p.t - anchorT;
+                const dw = (now - anchorWall) / 1000;
+                // Ignore seeks and pauses when learning the rate: a jump is not a
+                // tempo. Only smooth, forward-moving deltas teach us anything.
+                if (dw > 0.05 && dt > 0 && dt < dw * 4) {
+                    const r = dt / dw;
+                    observedRate = observedRate * 0.8 + r * 0.2;   // light smoothing
+                }
+            }
+            if (!p.playing) observedRate = 1;   // a paused clock has no rate to learn
+            anchorT = p.t;
+            anchorWall = now;
+            playing = p.playing;
+            duration = p.duration;
+        }
+
+        function playhead() {
+            if (!anchorWall) return anchorT;
+            if (!playing) return anchorT;
+            const elapsed = Math.min(MAX_EXTRAP_S, (performance.now() - anchorWall) / 1000);
+            return anchorT + observedRate * elapsed;
+        }
+
+        function handle(msg) {
+            const p = msg.payload || {};
+            switch (msg.type) {
+                case 'event': {
+                    const set_ = listeners.get(p.name);
+                    // Shaped like a CustomEvent so a pane's handler is identical in
+                    // both realms — `e.detail`, not `e`.
+                    if (set_) set_.forEach((fn) => { try { fn({ detail: p.detail }); } catch (e) { console.error('[pane] event handler threw', e); } });
+                    if (p.name === 'song:loaded') song = p.detail || null;
+                    break;
+                }
+                case 'stream': {
+                    if (p.playhead) _onPlayhead(p.playhead);
+                    for (const name in p) {
+                        const set_ = streamSubs.get(name);
+                        if (set_) set_.forEach((fn) => { try { fn(p[name]); } catch (e) { console.error('[pane] stream handler threw', e); } });
+                    }
+                    break;
+                }
+                case 'rpc:reply': {
+                    const call = pending.get(p.seq);
+                    if (!call) return;   // already timed out
+                    pending.delete(p.seq);
+                    clearTimeout(call.timer);
+                    if (p.ok) call.resolve(p.result);
+                    else call.reject(new Error(p.error || 'pane rpc failed'));
+                    break;
+                }
+            }
+        }
+
+        return {
+            kind: 'remote',
+            handle: handle,
+            setSong: (s) => { song = s; },
+
+            call(domain, command, payload) {
+                if (!channel) return Promise.reject(new Error('pane ctx.call: no channel'));
+                const seq = ++rpcSeq;
+                return new Promise((resolve, reject) => {
+                    // Every call gets a deadline. Without one, a main window that
+                    // died mid-call leaves the pane's promise pending forever and
+                    // its UI stuck on "Pending".
+                    const timer = setTimeout(() => {
+                        pending.delete(seq);
+                        reject(new Error('PaneRpcTimeout: ' + domain + '/' + command));
+                    }, RPC_TIMEOUT_MS);
+                    pending.set(seq, { resolve, reject, timer });
+                    channel.postMessage(envelope('rpc', paneId, hostId, { seq, domain, command, payload: payload || {} }));
+                });
+            },
+
+            on(name, fn) {
+                let set_ = listeners.get(name);
+                if (!set_) { set_ = new Set(); listeners.set(name, set_); }
+                set_.add(fn);
+                return () => set_.delete(fn);
+            },
+
+            subscribe(stream, fn) {
+                let set_ = streamSubs.get(stream);
+                if (!set_) {
+                    set_ = new Set();
+                    streamSubs.set(stream, set_);
+                    if (channel) channel.postMessage(envelope('sub', paneId, hostId, { stream }));
+                }
+                set_.add(fn);
+                return () => {
+                    set_.delete(fn);
+                    if (!set_.size && channel) channel.postMessage(envelope('unsub', paneId, hostId, { stream }));
+                };
+            },
+
+            playhead: playhead,
+            song: () => song,
+
+            // No toast stack in a pane window, and routing it back to the main
+            // window would pop the message up somewhere the user isn't looking.
+            toast(opts) { console.info('[pane]', (opts && opts.title) || '', (opts && opts.message) || ''); },
         };
     }
 
@@ -229,8 +386,13 @@
         CHANNEL_NAME,
         DEFAULT_EVENTS,
         CALL_TIMEOUT_MS,
+        RPC_TIMEOUT_MS,
+        MAX_EXTRAP_S,
+        envelope,
+        openChannel,
         createStateStore,
         createLocalTransport,
+        createRemoteTransport,
         createCtx,
     };
 })();
