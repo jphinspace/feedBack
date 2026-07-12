@@ -1,0 +1,206 @@
+/* fee[dB]ack — detachable panes.
+ *
+ * Hand-authored (not Tailwind-scanned) so a runtime-installed plugin can use the
+ * chip and the dock without shipping its own stylesheet — the same reason
+ * .fb-selectable is hand-authored in core CSS.
+ *
+ * Z-index: the dock is a child of <body>, so it is NOT on the ladder from
+ * docs/plugin-v3-ui.md (transport 20, rail 30, popovers 40) — those numbers live
+ * *inside* #player's stacking context, and #player itself is `position:fixed;
+ * z-index:100` covering the viewport. A dock below 100 is invisible on the
+ * player screen, which is the one screen panes exist for.
+ *
+ * So: body-level ladder. #player 100 < dock 110 < toasts 120 < modals 200.
+ * A pane is persistent furniture that outranks the player, but never outranks a
+ * notification or an interruption.
+ */
+
+/* ── The pop-out chip ────────────────────────────────────────────────────── */
+
+.fb-pane-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-left: auto;                  /* right-align inside a flex header */
+    border: 1px solid rgba(51, 65, 85, .7);
+    border-radius: .4rem;
+    background: rgba(30, 41, 59, .8);
+    color: #94a3b8;
+    font-size: .8rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+}
+.fb-pane-chip:hover {
+    color: #e2e8f0;
+    border-color: #4080e0;
+    background: rgba(64, 128, 224, .18);
+}
+.fb-pane-chip:focus-visible {
+    outline: 2px solid #4080e0;
+    outline-offset: 1px;
+}
+
+/* The dialog the chip lives in, while its pane is popped out. A dedicated class
+   rather than `.hidden`/[hidden]: the dialogs we attach to (the mixer popover,
+   the rail popovers) toggle those themselves, and two owners of one class is a
+   bug waiting to happen. */
+.fb-pane-detached { display: none !important; }
+
+/* What the user sees in the dialog's place. */
+.fb-pane-stub {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .35rem .6rem;
+    border: 1px dashed rgba(64, 128, 224, .55);
+    border-radius: .5rem;
+    background: rgba(64, 128, 224, .08);
+    color: #93b4e8;
+    font-size: .72rem;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+}
+.fb-pane-stub:hover {
+    background: rgba(64, 128, 224, .18);
+    border-color: #4080e0;
+}
+.fb-pane-stub-glyph { font-size: .85rem; }
+
+/* ── The dock ────────────────────────────────────────────────────────────── */
+
+.fb-pane-dock {
+    position: fixed;
+    top: 4.5rem;                        /* clear of the topbar */
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 110;                       /* above #player (100), below toasts (120) */
+    width: 22rem;
+    max-width: calc(100vw - 2rem);
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* The dock is a frame around cards, not a surface — pointer events belong to
+       the cards, so the empty space below them never eats a click meant for the
+       highway. */
+    pointer-events: none;
+    scrollbar-width: thin;
+}
+.fb-pane-dock.is-empty { display: none; }
+
+.fb-pane-card {
+    pointer-events: auto;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: rgba(15, 23, 42, .96);
+    border: 1px solid rgba(51, 65, 85, .6);
+    border-radius: .9rem;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+    overflow: hidden;
+}
+
+.fb-pane-card-head {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .5rem .7rem;
+    border-bottom: 1px solid rgba(51, 65, 85, .5);
+    background: rgba(30, 41, 59, .6);
+}
+.fb-pane-card-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: .78rem;
+    font-weight: 600;
+    color: #cbd5e1;
+}
+.fb-pane-card-btn {
+    flex: 0 0 auto;
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: .35rem;
+    background: transparent;
+    color: #94a3b8;
+    font-size: .75rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.fb-pane-card-btn:hover { background: rgba(51, 65, 85, .7); color: #e2e8f0; }
+.fb-pane-card-btn:focus-visible { outline: 2px solid #4080e0; outline-offset: 1px; }
+
+.fb-pane-card-body {
+    padding: .75rem;
+    font-size: .8rem;
+    color: #cbd5e1;
+}
+
+/* focus(id) — brief highlight so a re-open of an already-open pane says so
+   instead of appearing to do nothing. */
+.fb-pane-card.is-flash { animation: fb-pane-flash .7s ease-out; }
+@keyframes fb-pane-flash {
+    0%   { border-color: #4080e0; box-shadow: 0 0 0 3px rgba(64, 128, 224, .35), 0 12px 40px rgba(0, 0, 0, .5); }
+    100% { border-color: rgba(51, 65, 85, .6); box-shadow: 0 12px 40px rgba(0, 0, 0, .5); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .fb-pane-card.is-flash { animation: none; }
+}
+
+/* ── Shared widgets for built-in panes ───────────────────────────────────── */
+
+.fb-pane-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .2rem 0;
+}
+.fb-pane-key {
+    color: #94a3b8;
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    white-space: nowrap;
+}
+.fb-pane-val {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: .78rem;
+    color: #e2e8f0;
+    text-align: right;
+}
+.fb-pane-val.is-num { font-variant-numeric: tabular-nums; }
+.fb-pane-dim { color: #64748b; font-size: .72rem; }
+
+.fb-pane-bar {
+    position: relative;
+    height: .35rem;
+    border-radius: 999px;
+    background: rgba(51, 65, 85, .8);
+    overflow: hidden;
+}
+.fb-pane-bar-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 100%;
+    border-radius: inherit;
+    background: #4080e0;
+    transform: scaleX(0);
+    transform-origin: left;
+    /* scaleX is compositor-only; a width write would re-run layout every frame. */
+}
+.fb-pane-bar-fill.is-level { background: linear-gradient(90deg, #22c55e, #eab308 70%, #ef4444); }
