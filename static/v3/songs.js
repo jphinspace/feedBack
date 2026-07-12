@@ -482,7 +482,8 @@
     function accuracyBadge(filename, variant) {
         const acc = state.accuracy[filename];
         if (acc == null) return '';
-        const pct = Math.round(acc * 100);
+        // Floor, never round: 100% must mean every note hit.
+        const pct = Math.floor(acc * 100);
         if (variant === 'tree') {
             const color = acc >= MASTERY_ACCURACY ? 'text-fb-good' : acc >= 0.5 ? 'text-fb-mid' : 'text-fb-low';
             return '<span class="fb-acc-badge text-xs font-bold ' + color + '">' + pct + '%</span>';
@@ -1312,7 +1313,7 @@
             c.year ? String(c.year) : '']
             .filter(Boolean).join(' · ');
         const acc = (typeof c.best_accuracy === 'number')
-            ? '<span class="font-bold ' + (c.best_accuracy >= MASTERY_ACCURACY ? 'text-fb-good' : c.best_accuracy >= 0.5 ? 'text-fb-mid' : 'text-fb-low') + '">' + Math.round(c.best_accuracy * 100) + '%</span>'
+            ? '<span class="font-bold ' + (c.best_accuracy >= MASTERY_ACCURACY ? 'text-fb-good' : c.best_accuracy >= 0.5 ? 'text-fb-mid' : 'text-fb-low') + '">' + Math.floor(c.best_accuracy * 100) + '%</span>'
             : '<span class="text-fb-textDim/60">not played</span>';
         return '<div role="radio" aria-checked="' + (checked ? 'true' : 'false') + '" tabindex="0" data-ch="' + esc(c.filename) + '"' +
             ' title="' + (checked ? esc(prefLabel) : 'Make this the preferred chart') + '"' +

@@ -33,7 +33,8 @@
     // Accuracy badge ramp (design/04-badges.md §C): ≥90% good, 50–89% mid, <50% low.
     function accuracyBadge(acc) {
         if (acc == null) return '';
-        const pct = Math.round(acc * 100);
+        // Floor, never round: 100% must mean every note hit.
+        const pct = Math.floor(acc * 100);
         const color = acc >= 0.9 ? 'bg-fb-good' : (acc >= 0.5 ? 'bg-fb-mid' : 'bg-fb-low');
         const text = acc >= 0.5 && acc < 0.9 ? 'text-black' : 'text-white';
         return '<span class="absolute bottom-0 right-0 ' + color + '/90 ' + text +

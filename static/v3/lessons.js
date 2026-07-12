@@ -74,7 +74,7 @@
         if (st && st.passed) return '<span class="text-fb-good text-xs font-bold flex items-center gap-1">✓ Passed</span>';
         if (st && st.best_accuracy != null && st.best_accuracy > 0) {
             const acc = st.best_accuracy;
-            const pct = Math.round(acc * 100);
+            const pct = Math.floor(acc * 100);
             const color = acc >= 0.9 ? 'text-fb-good' : (acc >= 0.5 ? 'text-fb-mid' : 'text-fb-low');
             return '<span class="' + color + ' text-xs font-bold">' + pct + '%</span>';
         }

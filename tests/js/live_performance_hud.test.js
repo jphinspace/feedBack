@@ -170,7 +170,8 @@ test('DOM text updates after hit and miss events', () => {
     runtime.onHit();
     runtime.onMiss();
 
-    assert.equal(els.percent.textContent, '67%');
+    // Floored, not rounded: 100% must mean every judged note was hit.
+    assert.equal(els.percent.textContent, '66%');
     assert.equal(els.hits.textContent, 'Hits 2 / 3');
     assert.equal(els.streak.textContent, 'Streak 0');
     assert.match(els.state.textContent, /Recovering/);

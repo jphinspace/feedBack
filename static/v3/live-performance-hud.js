@@ -21,7 +21,8 @@
     function accuracyPct(hits, misses) {
         const judged = hits + misses;
         if (judged <= 0) return null;
-        return Math.round((hits / Math.max(1, judged)) * 100);
+        // Floor, never round: 100% must mean every judged note was hit.
+        return Math.floor((hits / Math.max(1, judged)) * 100);
     }
 
     function calculateLivePerformanceState({ hits = 0, misses = 0, streak = 0, bestStreak = 0 } = {}) {
