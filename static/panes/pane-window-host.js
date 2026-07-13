@@ -188,27 +188,6 @@
         w.addEventListener('beforeunload', () => {
             if (panes.isOpen(spec.id)) panes.close(spec.id);
         });
-
-        // Measure LATE. The pane window has not laid out yet at this point (it is
-        // still being created and shown), so anything read now reports 0x0 whether
-        // or not there is a real problem.
-        setTimeout(() => {
-            if (w.closed || !el.isConnected) return;
-            const view = doc.defaultView;
-            const cs = view.getComputedStyle(el);
-            const rootCs = view.getComputedStyle(root);
-            console.info('[panes] adopted', spec.id,
-                '| el:', el.id || el.className,
-                '| size:', el.offsetWidth + 'x' + el.offsetHeight,
-                '| display:', cs.display, '| visibility:', cs.visibility, '| opacity:', cs.opacity,
-                '| position:', cs.position, '| w/h:', cs.width + '/' + cs.height,
-                '| children:', el.childElementCount,
-                '| hidden attr:', el.hasAttribute('hidden'),
-                '| inline style:', el.getAttribute('style') || '(none)',
-                '| root size:', root.offsetWidth + 'x' + root.offsetHeight, '/', rootCs.display,
-                '| window inner:', view.innerWidth + 'x' + view.innerHeight,
-                '| styles:', doc.querySelectorAll('link[rel="stylesheet"], style').length);
-        }, 400);
     }
 
     function place(spec, el) {
