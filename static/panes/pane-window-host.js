@@ -58,11 +58,21 @@
         // pane.html already links panes.css, so don't clone a second copy of it —
         // duplicate sheets cost a redundant fetch and an extra style recalc for no
         // change in appearance.
-        const have = new Set(
-            Array.from(doc.querySelectorAll('link[rel="stylesheet"]')).map((l) => l.href));
+        const own = Array.from(doc.querySelectorAll('link[rel="stylesheet"]'));
+        const have = new Set(own.map((l) => l.href));
+
+        // Insert the app's sheets BEFORE pane.html's own, not after.
+        //
+        // Cascade order is the whole game here. In the app document panes.css loads
+        // LAST, after tailwind/style/v3 — so its rules win ties. Appending the app's
+        // sheets into the pane document would put them after panes.css and silently
+        // invert that, letting core styles override the pane chrome and the .fb-paned
+        // placement rules. "Looks identical" has to include the order things are
+        // said in.
+        const anchor = own[0] || null;
         document.querySelectorAll('link[rel="stylesheet"], style').forEach((node) => {
             if (node.tagName === 'LINK' && have.has(node.href)) return;
-            try { doc.head.appendChild(node.cloneNode(true)); } catch (e) { /* skip a node we can't clone */ }
+            try { doc.head.insertBefore(node.cloneNode(true), anchor); } catch (e) { /* skip a node we can't clone */ }
         });
         // Carry the theme/scale hooks the app hangs on <html> and <body>. v3 keys
         // off these for its colour tokens and interface scale, and a panel that
