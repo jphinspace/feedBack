@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **CI gate: core must stay faithful to the feedpak spec (`feedpak-spec` job).** feedpak is published as
+  an open format with its own repo, normative spec, JSON Schemas, and reference validator — but nothing
+  stopped core from reading a manifest key the spec never defined, which is exactly what happened with
+  `original_audio` (#583 → #933). `tools/check_spec_conformance.py` now enforces three surface properties
+  in CI: (1) **key-coverage** — every manifest key core reads is declared in the spec's
+  `manifest.schema.json`, found by walking the AST of `lib/sloppak.py`, `lib/enrichment.py`, and
+  `lib/songmeta.py`; (2) **forward** — core's `load_song()` ingests every example pack the spec ships;
+  (3) **reverse** — every pack committed here passes the spec's own `tools/validate.py` (7/7 pass today).
+  The spec is pinned by SHA in `.feedpak-spec-ref` so a change over there can't redden an unrelated PR
+  here; bump it in its own PR, and a red result is the signal that core doesn't satisfy the new spec.
+  A key that must ship ahead of the spec uses the reserved `x-` prefix (always allowed) or is recorded in
+  `feedpak-spec-exceptions.yml` with a tracking issue — and the gate fails if such an exception goes stale,
+  so the allowlist can't become somewhere drift hides. `original_audio` is seeded there against #933 so the
+  gate lands green and starts blocking the *next* instance immediately. Docs: [docs/feedpak-spec-gate.md](docs/feedpak-spec-gate.md).
+
 ### Removed
 - **The classic v2 UI shell is gone — v3 is the only UI (R3a).** `static/index.html`, the
   `/v2` route, and the `FEEDBACK_UI` v2/legacy opt-out are deleted; `/` and `/v3` both serve

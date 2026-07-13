@@ -1,0 +1,30 @@
+# Manifest keys core reads that the feedpak spec does not (yet) define.
+#
+# This file exists so the spec-conformance gate (tools/check_spec_conformance.py)
+# can be honest instead of being switched off. A gate with no legitimate way to
+# say "yes, deliberately, not yet" gets commented out the first time it blocks a
+# release — so drift that is *known and tracked* is allowed to sit here, and
+# only drift that is unknown and untracked fails the build.
+#
+# Rules:
+#   - Every entry needs a tracking issue. No issue, no exception.
+#   - Entries are debt, not policy. The fix is to land the key in the spec
+#     (github.com/got-feedback/feedpak-spec) and delete the entry.
+#   - The gate fails if an entry goes stale — i.e. the spec caught up, or core
+#     stopped reading the key. The allowlist must never become a hiding place.
+#
+# For a key that is genuinely experimental and not yet ready for the spec,
+# prefer the reserved `x-` prefix (e.g. `x-my_new_key`) over an exception: the
+# gate permits `x-`-prefixed keys unconditionally, and the prefix tells every
+# third-party packer that the key is not stable surface.
+
+exceptions:
+  - key: original_audio
+    issue: https://github.com/got-feedback/feedback/issues/933
+    reason: >-
+      Added by #583 (the full mix played while every stem fader sits at unity,
+      since demucs recombination is lossy). Core, lib/enrichment.py, and the
+      stems plugin all depend on it, but it was never added to the spec — the
+      drift this gate exists to prevent. Seeded here so the gate lands green and
+      starts blocking the *next* instance immediately; remove once the spec
+      adopts the key.

@@ -124,6 +124,55 @@ jobs:
           print(f"Validated {len(manifests)} manifest(s) — OK")
           EOF
 
+  feedpak-spec:
+    # Guard that core stays faithful to the feedpak format spec, which lives in
+    # its own repo (got-feedback/feedpak-spec) and is the contract third-party
+    # packers and players build against. Three surface checks: core reads only
+    # manifest keys the spec declares; core ingests the spec's example packs;
+    # packs committed here pass the spec's reference validator. Motivated by
+    # #933, where a manifest key (`original_audio`) shipped in core without ever
+    # reaching the spec. Pinned by SHA in .feedpak-spec-ref so a change over
+    # there can't redden an unrelated PR here.
+    name: feedpak-spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Read the pinned spec commit
+        id: spec
+        run: |
+          sha=$(grep -vE '^[[:space:]]*(#|$)' .feedpak-spec-ref | head -n1 | tr -d '[:space:]')
+          if [ -z "$sha" ]; then
+            echo "::error file=.feedpak-spec-ref::no commit SHA found in .feedpak-spec-ref"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out feedpak-spec at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: got-feedback/feedpak-spec
+          ref: ${{ steps.spec.outputs.sha }}
+          path: .feedpak-spec
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # CI-only: the spec's reference validator needs jsonschema. Not a
+          # runtime dependency — this gate never runs on the serve/Docker path
+          # (constitution Principle I).
+          pip install jsonschema
+
+      - name: Check feedpak spec conformance
+        run: python tools/check_spec_conformance.py --spec .feedpak-spec
+
   lint:
     # Maintainer/CI-only size + module-hygiene gate (constitution Principle I:
     # dev tooling, never on the serve/Docker path — same category as

@@ -1,0 +1,9 @@
+# Pinned commit of github.com/got-feedback/feedpak-spec that this repo is
+# verified against by the `feedpak-spec` CI job (tools/check_spec_conformance.py).
+#
+# Pinned by SHA rather than tracking the spec's default branch on purpose: a
+# change over there must never turn CI red on an unrelated PR here. When the
+# spec moves, bump this SHA in its own PR — if that PR is red, the spec changed
+# in a way core does not satisfy, which is exactly the signal we want, delivered
+# as a reviewable PR instead of a surprise.
+15e13e02062842d6660897623b41e04fd99ece58
