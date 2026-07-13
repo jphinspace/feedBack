@@ -87,10 +87,14 @@ EXCEPTIONS_FILE = REPO / "feedpak-spec-exceptions.yml"
 # the spec's own governance says "a change is not part of the format until it
 # lands here", and the FEP process is how it lands.
 FEP = (
-    "A new manifest key must go through the feedpak Enhancement Proposal process "
+    "New manifest keys go through the feedpak Enhancement Proposal process "
     "(https://github.com/got-feedback/feedpak-spec/blob/main/CONTRIBUTING.md): land a PR on "
     "feedpak-spec that updates the normative spec, the JSON Schemas, an example, and the "
-    "changelog together — then bump .feedpak-spec-ref to the merged SHA in this PR."
+    "changelog together — then re-run this PR's checks; the gate verifies against the "
+    "spec's HEAD, so once your key is in the spec, this PR goes green. It matters beyond "
+    "this PR: the whole repo is checked against the living spec, so non-conformance that "
+    "slips in shows up as red CI on every teammate's PR until it's resolved — sorting it "
+    "out here keeps everyone else unblocked."
 )
 
 
@@ -254,8 +258,8 @@ def check_allowlist_closed(baseline: Path | None, bootstrap: bool) -> bool:
 
     for key in added:
         _fail(
-            f"{EXCEPTIONS_FILE.name}: this PR ADDS an exception for '{key}'. The allowlist is "
-            f"closed — it grandfathers keys that predate this gate and may only shrink. {FEP}"
+            f"{EXCEPTIONS_FILE.name}: this PR adds an exception for '{key}', and the allowlist "
+            f"can't take new entries — it only grandfathers keys that predate the gate. {FEP}"
         )
     if removed:
         print(f"  allowlist shrank (debt paid down): {', '.join(removed)}")
@@ -458,7 +462,7 @@ def main() -> int:
         "--spec",
         required=True,
         type=Path,
-        help="path to a feedpak-spec checkout (CI pins the SHA in .feedpak-spec-ref)",
+        help="path to a feedpak-spec checkout (CI checks out the spec repo's HEAD)",
     )
     ap.add_argument(
         "--baseline-exceptions",

@@ -1,13 +1,12 @@
 # CLOSED grandfather list — manifest keys core reads or writes that predate the
 # spec-conformance gate and that the feedpak spec does not define.
 #
-# ┌─────────────────────────────────────────────────────────────────────────┐
-# │  THIS IS NOT AN ESCAPE HATCH. You cannot add to it.                      │
-# │  CI fails any PR that adds an entry here. The list may only SHRINK.      │
-# └─────────────────────────────────────────────────────────────────────────┘
-#
-# There is deliberately no in-repo way to merge a manifest key the spec doesn't
-# define. The feedpak spec's own governance is explicit:
+# Please don't add entries here — CI will flag any PR that grows this list, so
+# it can only shrink over time. That's by design, not distrust: the moment the
+# app touches a key the spec doesn't define, every teammate's PR starts failing
+# the conformance gate too, and whoever added the key is the only person who
+# can fix it. The FEP process below avoids putting anyone in that spot. The
+# feedpak spec's own governance is explicit:
 #
 #   "This repository defines the format only. Applications that read or write
 #    feedpak ... track this spec as a dependency; they do not drive it.
@@ -21,11 +20,12 @@
 #      on-disk shape, backward compatibility, and the version bump implied.
 #   2. Land one PR there updating the normative spec, the JSON Schemas, an
 #      example that exercises it, and the changelog — together.
-#   3. Back here, bump `.feedpak-spec-ref` to that merged SHA in the same PR that
-#      adds your code. The gate then goes green, because the key is now declared.
+#   3. Back here, re-run this PR's checks. The gate verifies against the spec's
+#      HEAD, so once your key is in the spec, the gate goes green.
 #
-# That is the only route. If your PR is blocked by this gate, the answer is a
-# FEP, not an entry in this file.
+# That's the supported route — and usually a quick one for additive keys. If
+# your PR is blocked by this gate, a FEP will get you unblocked properly; an
+# entry here won't (CI rejects it).
 #
 # Entries below exist ONLY because they predate the gate. Each is debt with a
 # tracking issue, and each disappears when its issue is fixed. The gate also

@@ -133,8 +133,16 @@ jobs:
     # the only way a new key lands; core ingests the spec's example packs; packs
     # committed here pass the spec's reference validator. Motivated by
     # #933, where a manifest key (`original_audio`) shipped in core without ever
-    # reaching the spec. Pinned by SHA in .feedpak-spec-ref so a change over
-    # there can't redden an unrelated PR here.
+    # reaching the spec.
+    #
+    # The gate checks against the spec repo's HEAD, deliberately: the app must
+    # conform to the LIVING spec, always. The dev flow is self-serve — a gated
+    # PR opens a FEP, the spec PR merges, re-running this job goes green; no
+    # pin file to bump, nothing to maintain. Accepted trade-off: a BREAKING
+    # spec change (rare, deliberate, MAJOR per the spec's compatibility policy)
+    # reddens every PR here until core conforms — which is the correct
+    # org-wide signal that the app is out of conformance. The normal FEP is
+    # additive and can never redden this job.
     name: feedpak-spec
     runs-on: ubuntu-latest
     steps:
@@ -152,30 +160,18 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Read the pinned spec commit
-        id: spec
-        run: |
-          sha=$(grep -vE '^[[:space:]]*(#|$)' .feedpak-spec-ref | head -n1 | tr -d '[:space:]')
-          if [ -z "$sha" ]; then
-            echo "::error file=.feedpak-spec-ref::no commit SHA found in .feedpak-spec-ref"
-            exit 1
-          fi
-          # actions/checkout resolves branches and tags in `ref` too, so a
-          # non-SHA here would silently un-pin the spec — the one thing this
-          # file exists to prevent. Demand a full 40-char SHA.
-          if ! printf '%s' "$sha" | grep -qE '^[0-9a-fA-F]{40}$'; then
-            echo "::error file=.feedpak-spec-ref::expected a full 40-character commit SHA, got '$sha' — a branch or tag name would defeat the pin"
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      - name: Check out feedpak-spec at the pinned commit
+      - name: Check out feedpak-spec at HEAD
         uses: actions/checkout@v4
         with:
           repository: got-feedback/feedpak-spec
-          ref: ${{ steps.spec.outputs.sha }}
+          ref: main
           path: .feedpak-spec
           persist-credentials: false
+
+      - name: Record the spec commit this run verified against
+        # HEAD-tracking means CI results can differ across time on the same
+        # commit. Log the exact spec SHA so a red run is reproducible.
+        run: git -C .feedpak-spec rev-parse HEAD
 
       - name: Install dependencies
         run: |

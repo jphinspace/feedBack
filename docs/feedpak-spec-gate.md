@@ -66,12 +66,14 @@ Land the key in the spec through the **feedpak Enhancement Proposal (FEP)** proc
 3. **Land one PR there** that updates the normative spec (`spec/feedpak-v1.md`), the relevant JSON
    Schema(s), an example in `examples/` that exercises it, and the changelog — *together*. A PR touching
    only one of those is incomplete.
-4. **Back here**, bump `.feedpak-spec-ref` to that merged SHA, in the same PR as your code. The gate goes
-   green, because the key is now genuinely part of the format.
+4. **Back here**, just re-run your PR's checks. The gate verifies against the spec's HEAD, so the moment
+   your key is genuinely part of the format, your PR goes green — nothing to bump, nothing to maintain.
 
-That is deliberately the only route. There is **no in-repo escape hatch** — no experimental prefix, no
-self-serve allowlist. If your PR is blocked, the answer is a FEP, not a workaround. The person merging has
-to stop and decide whether the change is worth taking through the format process, which is the whole point.
+That's deliberately the only route — no experimental prefix, no self-serve allowlist — and it's usually a
+quick one for additive keys. The reason it's worth the round-trip: the gate checks the whole repo against
+the living spec, so if non-conformance ever lands, it shows up as red CI on *every* teammate's open PR, and
+only the person who introduced it can clear it. Going through the FEP keeps your change clean and keeps
+everyone else unblocked.
 
 The spec's own governance says the same thing:
 
@@ -90,15 +92,21 @@ somewhere drift accumulates.
 Deleting an entry does not, by itself, get you past the gate: layer 1 still fails while core reads the key.
 The entry goes when the **code** goes.
 
-## Pinning
+## Tracking the spec's HEAD
 
-`.feedpak-spec-ref` holds the SHA of the `feedpak-spec` commit this repo is verified against. Pinned rather
-than tracking the spec's default branch on purpose — a change over there must never turn CI red on an
-unrelated PR here.
+The gate checks out `feedpak-spec` at **HEAD**, on purpose: the app must conform to the *living* spec, and
+nobody should have to maintain a pin. The dev flow is fully self-serve — gated PR → FEP → spec merge →
+re-run checks → green.
 
-When the spec moves, bump the SHA in its own PR. If that PR is red, the spec changed in a way core doesn't
-satisfy — exactly the signal we want, delivered as a reviewable PR rather than a surprise on someone else's
-branch.
+Two properties to know about:
+
+- **The normal FEP is additive** (a new optional key), which only ever makes the gate *looser* — it cannot
+  redden anyone's PR. Only a **breaking** spec change (removing/renaming a key the app uses, tightening the
+  validator against committed packs) turns PRs red repo-wide — and per the spec's compatibility policy that
+  is a rare, deliberate MAJOR event, exactly when an org-wide "the app is out of conformance" signal is the
+  right outcome. The CI job logs the exact spec SHA each run verified against, so a red run is reproducible.
+- **CI results can change over time on the same commit** — that is inherent to tracking a living contract,
+  and it is the point: green means "conformant *now*", not "conformant when written".
 
 ## Limitations
 

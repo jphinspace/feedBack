@@ -8,7 +8,7 @@
      Delete this section ONLY if your change doesn't touch how the app reads or writes packs. -->
 
 - [ ] This PR does **not** change how the app reads/writes feedpaks (manifest keys, pack files, folder layout)
-- [ ] …or it does, and the spec change landed first via the [FEP process](https://github.com/got-feedback/feedpak-spec/blob/main/CONTRIBUTING.md) — FEP / spec PR: `got-feedback/feedpak-spec#___` — and `.feedpak-spec-ref` is bumped to the merged SHA in this PR
+- [ ] …or it does, and the spec change landed first via the [FEP process](https://github.com/got-feedback/feedpak-spec/blob/main/CONTRIBUTING.md) — FEP / spec PR: `got-feedback/feedpak-spec#___` (once it merges, re-run this PR's checks and the gate goes green)
 
 ## Checklist
 

@@ -20,11 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list falls behind the codebase); (2) **allowlist-closed** — `feedpak-spec-exceptions.yml` never grows;
   (3) **forward** — core's `load_song()` ingests every example pack the spec ships;
   (4) **reverse** — every pack committed here passes the spec's own `tools/validate.py` (7/7 pass today).
-  The spec is pinned by SHA in `.feedpak-spec-ref` so a change over there can't redden an unrelated PR
-  here; bump it in its own PR, and a red result is the signal that core doesn't satisfy the new spec.
+  The gate verifies against the spec repo's **HEAD** — the app must conform to the living spec, and the
+  flow is self-serve: a gated PR opens a FEP, the spec PR merges, re-running checks goes green. Nothing to
+  pin, nothing to bump. Each run logs the spec SHA it verified against so results are reproducible.
   **There is no in-repo escape hatch, by design.** A blocked PR has exactly one route: land the key in the
   spec via the [FEP process](https://github.com/got-feedback/feedpak-spec/blob/main/CONTRIBUTING.md), then
-  bump `.feedpak-spec-ref` to the merged SHA in the same PR. `feedpak-spec-exceptions.yml` is a **closed
+  re-run the PR's checks — the gate verifies against the spec's HEAD, so it goes green once the key is real. `feedpak-spec-exceptions.yml` is a **closed
   grandfather list** for keys that predate the gate, not a bypass: a fourth check (**allowlist-closed**)
   diffs it against the base branch and fails any PR that *adds* an entry, so it may only shrink.
   `original_audio` is grandfathered there against #933 so the gate lands green and starts blocking the
