@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A key that must ship ahead of the spec uses the reserved `x-` prefix (always allowed) or is recorded in
   `feedpak-spec-exceptions.yml` with a tracking issue — and the gate fails if such an exception goes stale,
   so the allowlist can't become somewhere drift hides. `original_audio` is seeded there against #933 so the
-  gate lands green and starts blocking the *next* instance immediately. Docs: [docs/feedpak-spec-gate.md](docs/feedpak-spec-gate.md).
+  gate lands green and starts blocking the *next* instance immediately; the gate takes no position on how
+  #933 resolves (the expected outcome is removing the key, since the spec already carries the mixdown as a
+  stem — not adopting it). Docs: [docs/feedpak-spec-gate.md](docs/feedpak-spec-gate.md).
 
 ### Removed
 - **The classic v2 UI shell is gone — v3 is the only UI (R3a).** `static/index.html`, the

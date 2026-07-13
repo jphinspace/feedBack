@@ -23,6 +23,13 @@ The moment core reads a manifest key the spec doesn't define, that promise break
 The rule this gate enforces: **any manifest key core reads must be in the spec before core ships code that
 depends on it.** Spec first, implementation second.
 
+Note that "get it into the spec" is not automatically the right fix for an existing violation — for
+`original_audio` it isn't. The spec already carries the pre-separation mixdown as a stem
+(`{id: full, file: stems/full.ogg}`), so that key added a *second, redundant* location for audio to a format
+that already had one, and the resolution is to remove it rather than bless it. The gate takes no position on
+which way a violation resolves; it only insists that one of the two happens deliberately, in the open,
+before the code merges.
+
 ## What it checks
 
 We can't mechanically prove core *interprets* a key the way the spec means. We can prove three surface
