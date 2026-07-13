@@ -85,6 +85,17 @@
 
     // ── Spec ─────────────────────────────────────────────────────────────────
 
+    // A pane window's initial size. Plugin-controlled, and the window host builds
+    // window.open()'s feature string by concatenation — so this has to come out the
+    // other side as a number, not merely as something number-ish.
+    const MIN_PANE_PX = 120;
+    const MAX_PANE_PX = 4000;   // wider than any real display; a guard, not a policy
+    function _size(v, fallback) {
+        const n = Math.round(Number(v));
+        if (!Number.isFinite(n) || n <= 0) return fallback;
+        return Math.min(MAX_PANE_PX, Math.max(MIN_PANE_PX, n));
+    }
+
     function _normalize(spec) {
         if (!spec || typeof spec !== 'object') throw new TypeError('panes.register: spec must be an object');
         if (!spec.id || typeof spec.id !== 'string') throw new TypeError('panes.register: spec.id is required');
@@ -102,8 +113,14 @@
             // later (Camera Director rebuilds its panel on every mode change).
             // Asking for it at open time means we always move the live one.
             element: typeof spec.element === 'function' ? spec.element : () => spec.element,
-            width: spec.width || 380,
-            height: spec.height || 560,
+            // Coerced to real numbers, because these are plugin-controlled and the
+            // window host concatenates them into window.open()'s feature string. A
+            // `width` of '300,menubar=1' would not merely be an invalid size — it
+            // would inject window features. Anything that isn't a finite positive
+            // number falls back to the default, and absurd sizes are clamped rather
+            // than honoured.
+            width: _size(spec.width, 380),
+            height: _size(spec.height, 560),
             defaultHost: spec.defaultHost || 'window',
             // Called after the element lands in (or returns from) a pane window,
             // for a plugin that needs to re-measure or re-anchor something.
