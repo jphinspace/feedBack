@@ -249,6 +249,12 @@ def check_allowlist_closed(baseline: Path | None, bootstrap: bool) -> bool:
         print("  allowlist-closed: no baseline supplied (local run) — skipped")
         return True
 
+    if not baseline.is_file():
+        _fail(
+            f"--baseline-exceptions {baseline} does not exist. CI derives this from the base "
+            f"branch; for a local run, omit the flag to skip the allowlist diff."
+        )
+        return False
     base_keys = set(
         _parse_exceptions(baseline.read_text(encoding="utf-8"), f"{EXCEPTIONS_FILE.name} (base)")
     )
@@ -323,7 +329,14 @@ def check_key_coverage(spec: Path) -> bool:
         if not path.exists():
             _fail(f"reader {rel} not found — was it renamed? Update READERS in {Path(__file__).name}.")
             return False
-        r, w = keys_touched(path)
+        try:
+            r, w = keys_touched(path)
+        except SyntaxError as e:
+            # A module that doesn't parse can't be scanned — but it also can't
+            # pass pytest, so this is belt-and-braces for a CI-legible message
+            # rather than a traceback if this job runs first.
+            _fail(f"could not scan {rel}: {e}")
+            return False
         reads |= r
         writes |= w
 
