@@ -267,8 +267,7 @@ function createHighway() {
     hwState._filteredChords = null;
     hwState._filteredAnchors = null;
     hwState._filteredHandShapes = null;
-    // Chart-transform stage: read sites fall through transformed → filtered → raw.
-    // null = inactive; restaged AFTER the mastery filter (see _restageChartTransform).
+    // Transform stage; null fields fall through to filtered/original data.
     hwState._xfProvider = null;      // { id, transform } or null
     hwState._xfNotes = null;         // effective (post-filter) views
     hwState._xfChords = null;
@@ -567,13 +566,9 @@ function createHighway() {
         b.sections = hwState.sections;
         b.chordTemplates = hwState._xfChordTemplates !== null ? hwState._xfChordTemplates : hwState.chordTemplates;
         b.stringCount = hwState._xfStringCount !== null ? hwState._xfStringCount : hwState.stringCount;
-        // Mirrors song_info tuning capo offsets (±semitones from the
-        // instrument’s standard open-string layout). Live reference.
-        // An active chart transform substitutes its target tuning here.
+        // Effective tuning metadata; live references like the chart arrays.
         b.tuning = hwState._xfTuning !== null ? hwState._xfTuning : hwState.songInfo?.tuning;
         b.capo = hwState._xfCapo !== null ? hwState._xfCapo : hwState.songInfo?.capo;
-        // RS2014 cent offset (float cents; see the song_info message docs).
-        // Like tuning/capo, an active chart transform substitutes its own.
         b.centOffset = hwState._xfCentOffset !== null ? hwState._xfCentOffset : hwState.songInfo?.centOffset;
         b.lyrics = hwState.lyrics;
         b.lyricsSource = hwState.lyricsSource;
@@ -1567,21 +1562,46 @@ function createHighway() {
         hwState._xfCentOffset = null;
     }
 
+    function _cloneChartTransformValue(value, seen = new WeakMap()) {
+        if (!value || typeof value !== 'object') return value;
+        if (seen.has(value)) return seen.get(value);
+        const copy = Array.isArray(value) ? new Array(value.length) : {};
+        seen.set(value, copy);
+        for (const key of Object.keys(value)) {
+            Object.defineProperty(copy, key, {
+                value: _cloneChartTransformValue(value[key], seen),
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
+        }
+        return copy;
+    }
+
     function _sortedChartTransformArray(items, key) {
         return items.slice().sort((a, b) => a[key] - b[key]);
     }
 
-    // Run the installed chart-transform provider over the difficulty-filtered
-    // chart and stage its output. A provider error clears the stage (the
-    // original chart keeps rendering) and emits highway:chart-transform-failed.
+    function _reportChartTransformFailure(provider, error) {
+        _clearChartTransformStage();
+        console.error('chart transform:', error);
+        if (window.feedBack && typeof window.feedBack.emit === 'function') {
+            try {
+                window.feedBack.emit('highway:chart-transform-failed', {
+                    id: provider.id,
+                });
+            } catch (_) { /* eventing must not break rendering */ }
+        }
+    }
+
+    // Stage one synchronous transform over the difficulty-filtered chart.
     function _restageChartTransform() {
         _clearChartTransformStage();
         const p = hwState._xfProvider;
         if (!p) return;
         const filterActive = hwState._filteredNotes !== null;
-        let out;
         try {
-            out = p.transform({
+            let out = p.transform(_cloneChartTransformValue({
                 notes: filterActive ? hwState._filteredNotes : hwState.notes,
                 chords: hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords,
                 anchors: hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors,
@@ -1594,39 +1614,42 @@ function createHighway() {
                     : hwState.handShapes,
                 stringCount: hwState.stringCount,
                 songInfo: hwState.songInfo,
-            });
-        } catch (e) {
-            console.error('chart transform:', e);
-            if (window.feedBack && typeof window.feedBack.emit === 'function') {
+            }));
+            if (out && typeof out.then === 'function') {
                 try {
-                    window.feedBack.emit('highway:chart-transform-failed', {
-                        id: p.id,
-                    });
-                } catch (_) { /* eventing must not break rendering */ }
+                    const catchAsyncFailure = out.catch;
+                    if (typeof catchAsyncFailure === 'function') {
+                        catchAsyncFailure.call(out, error => console.error('chart transform async:', error));
+                    }
+                } catch (_) { /* the synchronous failure below remains authoritative */ }
+                throw new TypeError('Chart transform providers must return synchronously');
             }
+            if (!out || typeof out !== 'object') return;
+            out = _cloneChartTransformValue(out);
+            if (Array.isArray(out.notes)) hwState._xfNotes = _sortedChartTransformArray(out.notes, 't');
+            if (Array.isArray(out.chords)) hwState._xfChords = _sortedChartTransformArray(out.chords, 't');
+            if (Array.isArray(out.anchors)) hwState._xfAnchors = _sortedChartTransformArray(out.anchors, 'time');
+            // Full-difficulty views: explicit allNotes/allChords, or reuse the
+            // effective output when no filter is active (effective === raw then).
+            if (Array.isArray(out.allNotes)) hwState._xfNotesAll = _sortedChartTransformArray(out.allNotes, 't');
+            else if (!filterActive && Array.isArray(out.notes)) hwState._xfNotesAll = hwState._xfNotes;
+            if (Array.isArray(out.allChords)) hwState._xfChordsAll = _sortedChartTransformArray(out.allChords, 't');
+            else if (hwState._filteredChords === null && Array.isArray(out.chords)) hwState._xfChordsAll = hwState._xfChords;
+            if (Array.isArray(out.chordTemplates)) hwState._xfChordTemplates = out.chordTemplates;
+            if (Number.isFinite(out.stringCount) && out.stringCount >= 1) {
+                // Same [1, 8] clamp as the song_info stringCount handler.
+                hwState._xfStringCount = Math.max(1, Math.min(8, Math.trunc(out.stringCount)));
+            }
+            if (Array.isArray(out.tuning) && out.tuning.length) hwState._xfTuning = out.tuning;
+            if (Number.isFinite(out.capo) && out.capo >= 0) hwState._xfCapo = Math.trunc(out.capo);
+            if (Array.isArray(out.handShapes)) {
+                hwState._xfHandShapes = _sortedChartTransformArray(out.handShapes, 'start_time');
+            }
+            if (Number.isFinite(out.centOffset)) hwState._xfCentOffset = out.centOffset;
+        } catch (e) {
+            _reportChartTransformFailure(p, e);
             return;
         }
-        if (!out || typeof out !== 'object') return;
-        if (Array.isArray(out.notes)) hwState._xfNotes = _sortedChartTransformArray(out.notes, 't');
-        if (Array.isArray(out.chords)) hwState._xfChords = _sortedChartTransformArray(out.chords, 't');
-        if (Array.isArray(out.anchors)) hwState._xfAnchors = _sortedChartTransformArray(out.anchors, 'time');
-        // Full-difficulty views: explicit allNotes/allChords, or reuse the
-        // effective output when no filter is active (effective === raw then).
-        if (Array.isArray(out.allNotes)) hwState._xfNotesAll = _sortedChartTransformArray(out.allNotes, 't');
-        else if (!filterActive && Array.isArray(out.notes)) hwState._xfNotesAll = hwState._xfNotes;
-        if (Array.isArray(out.allChords)) hwState._xfChordsAll = _sortedChartTransformArray(out.allChords, 't');
-        else if (hwState._filteredChords === null && Array.isArray(out.chords)) hwState._xfChordsAll = hwState._xfChords;
-        if (Array.isArray(out.chordTemplates)) hwState._xfChordTemplates = out.chordTemplates;
-        if (Number.isFinite(out.stringCount) && out.stringCount >= 1) {
-            // Same [1, 8] clamp as the song_info stringCount handler.
-            hwState._xfStringCount = Math.max(1, Math.min(8, Math.trunc(out.stringCount)));
-        }
-        if (Array.isArray(out.tuning) && out.tuning.length) hwState._xfTuning = out.tuning;
-        if (Number.isFinite(out.capo) && out.capo >= 0) hwState._xfCapo = Math.trunc(out.capo);
-        if (Array.isArray(out.handShapes)) {
-            hwState._xfHandShapes = _sortedChartTransformArray(out.handShapes, 'start_time');
-        }
-        if (Number.isFinite(out.centOffset)) hwState._xfCentOffset = out.centOffset;
     }
 
     // ── Public API ───────────────────────────────────────────────────────
@@ -2622,6 +2645,9 @@ function createHighway() {
         // assuming 6. Defaults to 6 between songs (until the next
         // song_info message arrives).
         getStringCount() { return hwState._xfStringCount !== null ? hwState._xfStringCount : hwState.stringCount; },
+        getTuning() { return hwState._xfTuning !== null ? hwState._xfTuning : hwState.songInfo?.tuning; },
+        getCapo() { return hwState._xfCapo !== null ? hwState._xfCapo : hwState.songInfo?.capo; },
+        getCentOffset() { return hwState._xfCentOffset !== null ? hwState._xfCentOffset : hwState.songInfo?.centOffset; },
         addDrawHook(fn) {
             hwState._drawHooks.push(fn);
         },
@@ -2645,23 +2671,8 @@ function createHighway() {
          */
         setNoteStateProvider(fn) { hwState._noteStateProvider = (typeof fn === 'function') ? fn : null; },
         getNoteStateProvider() { return hwState._noteStateProvider; },
-        /**
-         * Install a chart-transform provider (chart-transform capability
-         * domain). `p` is `{ id, transform }`; `transform(input)` receives
-         * `{ notes, chords, anchors, allNotes, allChords, chordTemplates,
-         * handShapes, stringCount, songInfo }` — the notes/chords/anchors/
-         * handShapes views are the DIFFICULTY-FILTERED chart (the transform
-         * applies after the mastery filter) — and returns `{ notes?, chords?,
-         * anchors?, allNotes?, allChords?, chordTemplates?, handShapes?,
-         * stringCount?, tuning?, capo?, centOffset? }`. Staged output
-         * substitutes the chart for every consumer: the built-in 2D renderer,
-         * setRenderer viz (via the bundle), overlays and scorers (via the
-         * getters). It re-runs on chart ready and on every mastery change; a
-         * throwing provider is skipped for that pass (original chart renders)
-         * and `highway:chart-transform-failed` fires on window.feedBack.
-         * The provider persists across songs on this instance. Pass null to
-         * clear. Only one provider is active at a time.
-         */
+        // Install one synchronous provider for this highway. The capability
+        // domain owns registration and selection; null clears the provider.
         setChartTransform(p) {
             hwState._xfProvider = (p && typeof p.transform === 'function')
                 ? { id: String(p.id || 'anonymous'), transform: p.transform }
@@ -2877,11 +2888,7 @@ function createHighway() {
          */
         isDefaultRenderer() { return hwState._renderer === _defaultRenderer || hwState._renderer == null; },
     };
-    // Announce the instance so cross-instance coordinators (the
-    // chart-transform domain owner installing the active provider on
-    // splitscreen panels) can reach every highway, not just window.highway.
-    // Local CustomEvent; payload lives on event.detail like the other
-    // highway:* events.
+    // Let cross-instance coordinators discover this highway.
     if (window.feedBack && typeof window.feedBack.emit === 'function') {
         try { window.feedBack.emit('highway:created', { highway: api }); }
         catch (e) { console.error('highway:created emit:', e); }

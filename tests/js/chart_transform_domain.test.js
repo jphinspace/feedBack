@@ -9,6 +9,9 @@ const CAPABILITIES_JS = path.join(ROOT, 'static', 'capabilities.js');
 const CHART_TRANSFORM_JS = path.join(ROOT, 'static', 'capabilities', 'chart-transform.js');
 
 const STORAGE_KEY = 'feedBack.chartTransform.selectedProviderId';
+const PLUGIN_ID = 'example_plugin';
+const PROVIDER_ID = 'example-transform';
+const PROVIDER_LABEL = 'Example Transform';
 
 function makeFakeHighway() {
     const calls = { set: [], refresh: 0 };
@@ -45,10 +48,10 @@ function captureEvents(api, eventNames) {
 async function registerProvider(api, overrides = {}) {
     return api.dispatch({
         capability: 'chart-transform', command: 'register-provider',
-        source: overrides.source || 'chart_retuner',
+        source: overrides.source || PLUGIN_ID,
         payload: {
-            providerId: overrides.providerId || 'chart-retuner',
-            label: overrides.label || 'Chart Retuner',
+            providerId: overrides.providerId || PROVIDER_ID,
+            label: overrides.label || PROVIDER_LABEL,
             transform: overrides.transform || ((input) => ({ notes: input.notes })),
         },
     });
@@ -72,7 +75,7 @@ test('register-provider requires a transform function', async () => {
     const api = window.feedBack.capabilities;
     const result = await api.dispatch({
         capability: 'chart-transform', command: 'register-provider',
-        source: 'chart_retuner', payload: { providerId: 'chart-retuner' },
+        source: PLUGIN_ID, payload: { providerId: PROVIDER_ID },
     });
     assert.equal(result.outcome, 'degraded');
     assert.match(result.reason, /transform\(input\) function/);
@@ -89,19 +92,19 @@ test('register + select installs the provider on the highway and persists', asyn
 
     const reg = await registerProvider(api);
     assert.equal(reg.outcome, 'handled');
-    assert.ok(api.inspect('chart-transform').participants.some(p => p.pluginId === 'chart_retuner'));
+    assert.ok(api.inspect('chart-transform').participants.some(p => p.pluginId === PLUGIN_ID));
 
     const sel = await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
     assert.equal(sel.outcome, 'handled');
-    assert.equal(sel.payload.active, 'chart-retuner');
+    assert.equal(sel.payload.active, PROVIDER_ID);
     assert.equal(sel.payload.installed, true);
     assert.equal(highway.calls.set.length, 1);
-    assert.equal(highway.calls.set[0].id, 'chart-retuner');
+    assert.equal(highway.calls.set[0].id, PROVIDER_ID);
     assert.equal(typeof highway.calls.set[0].transform, 'function');
-    assert.equal(window.localStorage.getItem(STORAGE_KEY), 'chart-retuner');
+    assert.equal(window.localStorage.getItem(STORAGE_KEY), PROVIDER_ID);
 
     const names = events.map(e => e.event);
     assert.ok(names.includes('provider-registered'));
@@ -125,7 +128,7 @@ test('selection without a highway is kept and installed on song:ready', async ()
     await registerProvider(api);
     const sel = await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
     assert.equal(sel.outcome, 'handled');
     assert.equal(sel.payload.installed, false, 'no highway yet');
@@ -134,17 +137,17 @@ test('selection without a highway is kept and installed on song:ready', async ()
     window.highway = highway;
     window.feedBack.emit('song:ready', {});
     assert.equal(highway.calls.set.length, 1);
-    assert.equal(highway.calls.set[0].id, 'chart-retuner');
+    assert.equal(highway.calls.set[0].id, PROVIDER_ID);
     assert.equal(window.feedBack.chartTransformDomain.snapshot().installed, true);
 });
 
 test('a persisted selection restores when its provider registers', async () => {
     const highway = makeFakeHighway();
-    const window = loadChartTransform({ highway, persistedSelection: 'chart-retuner' });
+    const window = loadChartTransform({ highway, persistedSelection: PROVIDER_ID });
     const api = window.feedBack.capabilities;
     await registerProvider(api);
     const snapshot = window.feedBack.chartTransformDomain.snapshot();
-    assert.equal(snapshot.active, 'chart-retuner');
+    assert.equal(snapshot.active, PROVIDER_ID);
     assert.equal(snapshot.activeSource, 'restore-selection');
     assert.equal(highway.calls.set.length, 1);
 });
@@ -156,19 +159,19 @@ test('unregister is registrant-only and detaches the active provider', async () 
     await registerProvider(api);
     await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
 
     const denied = await api.dispatch({
         capability: 'chart-transform', command: 'unregister-provider',
-        source: 'someone_else', payload: { providerId: 'chart-retuner' },
+        source: 'someone_else', payload: { providerId: PROVIDER_ID },
     });
     assert.equal(denied.outcome, 'degraded');
     assert.match(denied.reason, /original registrant/);
 
     const ok = await api.dispatch({
         capability: 'chart-transform', command: 'unregister-provider',
-        source: 'chart_retuner', payload: { providerId: 'chart-retuner' },
+        source: PLUGIN_ID, payload: { providerId: PROVIDER_ID },
     });
     assert.equal(ok.outcome, 'handled');
     const snapshot = window.feedBack.chartTransformDomain.snapshot();
@@ -177,34 +180,47 @@ test('unregister is registrant-only and detaches the active provider', async () 
     // Detach = a trailing setChartTransform(null) on the highway.
     assert.equal(highway.calls.set[highway.calls.set.length - 1], null);
     // Persisted selection survives so re-registration re-activates.
-    assert.equal(window.localStorage.getItem(STORAGE_KEY), 'chart-retuner');
+    assert.equal(window.localStorage.getItem(STORAGE_KEY), PROVIDER_ID);
 });
 
 test('unregister keeps a participant while another provider still references it', async () => {
     const window = loadChartTransform();
     const api = window.feedBack.capabilities;
-    await registerProvider(api, { providerId: 'guitar-retuner' });
-    await registerProvider(api, { providerId: 'bass-retuner' });
+    await registerProvider(api, { providerId: 'provider-a', label: 'Provider A' });
+    await registerProvider(api, { providerId: 'provider-b', label: 'Provider B' });
 
-    await api.dispatch({
-        capability: 'chart-transform', command: 'unregister-provider',
-        source: 'chart_retuner', payload: { providerId: 'guitar-retuner' },
-    });
-
-    const participant = api.inspect('chart-transform').participants
-        .find(p => p.pluginId === 'chart_retuner');
-    assert.ok(participant, 'the shared participant remains registered');
+    let participant = api.inspect('chart-transform').participants
+        .find(p => p.pluginId === PLUGIN_ID);
+    assert.deepEqual(Array.from(participant.providerPolicy.providerIds), ['provider-a', 'provider-b']);
     assert.deepEqual(
-        Array.from(window.feedBack.chartTransformDomain.snapshot().providers, p => p.id),
-        ['bass-retuner'],
+        Array.from(participant.providerPolicy.providers, p => ({ id: p.id, label: p.label })),
+        [{ id: 'provider-a', label: 'Provider A' }, { id: 'provider-b', label: 'Provider B' }],
     );
 
     await api.dispatch({
         capability: 'chart-transform', command: 'unregister-provider',
-        source: 'chart_retuner', payload: { providerId: 'bass-retuner' },
+        source: PLUGIN_ID, payload: { providerId: 'provider-b' },
+    });
+
+    participant = api.inspect('chart-transform').participants
+        .find(p => p.pluginId === PLUGIN_ID);
+    assert.ok(participant, 'the shared participant remains registered');
+    assert.deepEqual(Array.from(participant.providerPolicy.providerIds), ['provider-a']);
+    assert.deepEqual(
+        Array.from(participant.providerPolicy.providers, p => ({ id: p.id, label: p.label })),
+        [{ id: 'provider-a', label: 'Provider A' }],
+    );
+    assert.deepEqual(
+        Array.from(window.feedBack.chartTransformDomain.snapshot().providers, p => p.id),
+        ['provider-a'],
+    );
+
+    await api.dispatch({
+        capability: 'chart-transform', command: 'unregister-provider',
+        source: PLUGIN_ID, payload: { providerId: 'provider-a' },
     });
     assert.ok(!api.inspect('chart-transform').participants
-        .some(p => p.pluginId === 'chart_retuner'), 'the final removal unregisters the participant');
+        .some(p => p.pluginId === PLUGIN_ID), 'the final removal unregisters the participant');
 });
 
 test('clear-provider clears the highway hook and the persisted selection', async () => {
@@ -214,7 +230,7 @@ test('clear-provider clears the highway hook and the persisted selection', async
     await registerProvider(api);
     await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
     const result = await api.dispatch({
         capability: 'chart-transform', command: 'clear-provider', source: 'settings_ui',
@@ -231,9 +247,9 @@ test('refresh re-runs the installed transform', async () => {
     await registerProvider(api);
     await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
-    const result = await api.dispatch({ capability: 'chart-transform', command: 'refresh', source: 'chart_retuner' });
+    const result = await api.dispatch({ capability: 'chart-transform', command: 'refresh', source: PLUGIN_ID });
     assert.equal(result.outcome, 'handled');
     assert.equal(result.payload.refreshed, true);
     assert.equal(highway.calls.refresh, 1);
@@ -246,7 +262,7 @@ test('announced highway instances (splitscreen panels) get the active transform'
     await registerProvider(api);
     await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
     assert.equal(window.feedBack.chartTransformDomain.snapshot().surfaces, 1);
 
@@ -254,11 +270,11 @@ test('announced highway instances (splitscreen panels) get the active transform'
     const panel = makeFakeHighway();
     window.feedBack.emit('highway:created', { highway: panel });
     assert.equal(panel.calls.set.length, 1, 'panel receives the active transform');
-    assert.equal(panel.calls.set[0].id, 'chart-retuner');
+    assert.equal(panel.calls.set[0].id, PROVIDER_ID);
     assert.equal(window.feedBack.chartTransformDomain.snapshot().surfaces, 2);
 
     // Refresh reaches every surface.
-    await api.dispatch({ capability: 'chart-transform', command: 'refresh', source: 'chart_retuner' });
+    await api.dispatch({ capability: 'chart-transform', command: 'refresh', source: PLUGIN_ID });
     assert.equal(primary.calls.refresh, 1);
     assert.equal(panel.calls.refresh, 1);
 
@@ -276,11 +292,11 @@ test('a panel announced before any selection installs on later select', async ()
     await registerProvider(api);
     const sel = await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
     assert.equal(sel.outcome, 'handled');
     assert.equal(panel.calls.set.length, 1);
-    assert.equal(panel.calls.set[0].id, 'chart-retuner');
+    assert.equal(panel.calls.set[0].id, PROVIDER_ID);
 });
 
 test('highway failure events expose a fixed public reason', async () => {
@@ -291,16 +307,16 @@ test('highway failure events expose a fixed public reason', async () => {
     await registerProvider(api);
     await api.dispatch({
         capability: 'chart-transform', command: 'select-provider',
-        source: 'settings_ui', payload: { providerId: 'chart-retuner' },
+        source: 'settings_ui', payload: { providerId: PROVIDER_ID },
     });
 
     window.feedBack.emit('highway:chart-transform-failed', {
-        id: 'chart-retuner',
+        id: PROVIDER_ID,
         reason: 'token=secret https://example.test/private chart={notes:[...]}',
     });
 
     const snapshot = window.feedBack.chartTransformDomain.snapshot();
-    assert.equal(snapshot.lastFailure.providerId, 'chart-retuner');
+    assert.equal(snapshot.lastFailure.providerId, PROVIDER_ID);
     assert.equal(snapshot.lastFailure.reason, 'Chart transform provider failed');
     assert.equal(events.length, 1);
     assert.equal(events[0].payload.reason, 'Chart transform provider failed');

@@ -1,8 +1,5 @@
-// Source-level tests for the chart-transform staging tier in highway.js /
-// highway-draw.js. Mirrors highway_filtered_notes.test.js: the createHighway
-// closure is too heavy for a Node sandbox, so these lock in the wiring —
-// the transformed → filtered → raw fall-through order, restage placement
-// AFTER the mastery filter, and the error-isolation path.
+// Source-level coverage is used because createHighway's browser closure is too
+// large for the Node harness. Critical staging helpers are exercised directly.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -55,8 +52,10 @@ test('restage consumes the difficulty-filtered arrays, not the raw chart', () =>
 test('a throwing provider clears the stage and emits highway:chart-transform-failed', () => {
     const src = fs.readFileSync(highwayJs, 'utf8');
     const fn = src.slice(src.indexOf('function _restageChartTransform'), src.indexOf('// ── Public API'));
-    assert.match(fn, /catch\s*\(e\)\s*\{[\s\S]*highway:chart-transform-failed[\s\S]*return;/);
-    assert.match(fn, /console\.error\('chart transform:', e\)/, 'raw exception stays in the local console');
+    const report = extractBlock(src, 'function _reportChartTransformFailure(provider, error)');
+    assert.match(fn, /catch\s*\(e\)\s*\{[\s\S]*_reportChartTransformFailure\(p, e\)[\s\S]*return;/);
+    assert.match(report, /highway:chart-transform-failed/);
+    assert.match(report, /console\.error\('chart transform:', error\)/, 'raw exception stays in the local console');
     assert.doesNotMatch(fn, /reason:\s*e/, 'raw exception is not emitted');
     assert.match(fn, /^\s*_clearChartTransformStage\(\);/m, 'stage cleared before the provider runs');
 });
@@ -88,7 +87,9 @@ test('unordered provider timelines are copied and normalized for searches and an
     const drawSrc = fs.readFileSync(highwayDrawJs, 'utf8');
     const snippets = [
         extractBlock(highwaySrc, 'function _clearChartTransformStage()'),
+        extractBlock(highwaySrc, 'function _cloneChartTransformValue(value, seen = new WeakMap())'),
         extractBlock(highwaySrc, 'function _sortedChartTransformArray(items, key)'),
+        extractBlock(highwaySrc, 'function _reportChartTransformFailure(provider, error)'),
         extractBlock(highwaySrc, 'function _restageChartTransform()'),
         extractBlock(highwaySrc, 'function bsearchTime(arr, time)'),
         extractBlock(highwaySrc, 'function getAnchorAt(t)'),
@@ -106,6 +107,10 @@ test('unordered provider timelines are copied and normalized for searches and an
         allNotes: [{ t: 7 }, { t: 0 }, { t: 3 }],
         allChords: [{ t: 6 }, { t: 4 }],
         handShapes: [{ start_time: 9 }, { start_time: 1 }],
+        stringCount: 4,
+        tuning: [-2, -2, -2, -2],
+        capo: 2,
+        centOffset: -12.5,
     };
     const hwState = {
         _xfProvider: { id: 'unordered', transform: () => providerOutput },
@@ -117,10 +122,10 @@ test('unordered provider timelines are copied and normalized for searches and an
         notes: [], chords: [], anchors: [], handShapes: [], chordTemplates: [],
         stringCount: 6, songInfo: {},
     };
-    const helpers = new Function('hwState', 'window', 'VISIBLE_SECONDS', `
+    const helpers = new Function('hwState', 'window', 'VISIBLE_SECONDS', 'console', `
         ${snippets}
         return { _restageChartTransform, bsearch, bsearchTime, getAnchorAt, getMaxFretInWindow };
-    `)(hwState, {}, 3);
+    `)(hwState, {}, 3, { error() {} });
 
     helpers._restageChartTransform();
 
@@ -130,7 +135,13 @@ test('unordered provider timelines are copied and normalized for searches and an
     assert.deepEqual(hwState._xfChordsAll.map(ch => ch.t), [4, 6]);
     assert.deepEqual(hwState._xfAnchors.map(a => a.time), [0, 5, 10]);
     assert.deepEqual(hwState._xfHandShapes.map(h => h.start_time), [1, 9]);
+    assert.equal(hwState._xfStringCount, 4);
+    assert.deepEqual(hwState._xfTuning, [-2, -2, -2, -2]);
+    assert.equal(hwState._xfCapo, 2);
+    assert.equal(hwState._xfCentOffset, -12.5);
     assert.deepEqual(providerOutput.notes.map(n => n.t), [9, 1, 5], 'provider output is not mutated');
+    providerOutput.tuning[0] = 99;
+    assert.equal(hwState._xfTuning[0], -2, 'staged metadata is detached from provider output');
     assert.equal(helpers.bsearch(hwState._xfNotes, 5), 1);
     assert.equal(helpers.bsearchTime(hwState._xfAnchors, 5), 1);
     assert.equal(helpers.getAnchorAt(6).time, 5);
@@ -147,6 +158,94 @@ test('unordered provider timelines are copied and normalized for searches and an
     assert.deepEqual(hwState._xfChordsAll.map(ch => ch.t), [1, 3], 'unfiltered chords still fall back');
 });
 
+test('provider inputs and staged outputs are isolated from provider mutation', () => {
+    const src = fs.readFileSync(highwayJs, 'utf8');
+    const snippets = [
+        extractBlock(src, 'function _clearChartTransformStage()'),
+        extractBlock(src, 'function _cloneChartTransformValue(value, seen = new WeakMap())'),
+        extractBlock(src, 'function _sortedChartTransformArray(items, key)'),
+        extractBlock(src, 'function _reportChartTransformFailure(provider, error)'),
+        extractBlock(src, 'function _restageChartTransform()'),
+    ].join('\n');
+    const sourceNote = { t: 1, bendValues: [{ t: 0, v: 1 }] };
+    const sourceInfo = { tuning: [0, 0], nested: { value: 1 } };
+    const events = [];
+    const hwState = {
+        _xfProvider: null,
+        _filteredNotes: null, _filteredChords: null, _filteredAnchors: null,
+        _filteredHandShapes: null, _phrasesHaveHandShapes: false,
+        notes: [sourceNote], chords: [], anchors: [], handShapes: [], chordTemplates: [],
+        stringCount: 2, songInfo: sourceInfo,
+    };
+    const helpers = new Function('hwState', 'window', 'console', `
+        ${snippets}
+        return { _restageChartTransform };
+    `)(hwState, { feedBack: { emit(name, detail) { events.push({ name, detail }); } } }, { error() {} });
+
+    hwState._xfProvider = {
+        id: 'mutating-provider',
+        transform(input) {
+            input.notes[0].t = 99;
+            input.notes[0].bendValues[0].v = 7;
+            input.songInfo.nested.value = 8;
+            throw new Error('private provider detail');
+        },
+    };
+    helpers._restageChartTransform();
+    assert.equal(sourceNote.t, 1);
+    assert.equal(sourceNote.bendValues[0].v, 1);
+    assert.equal(sourceInfo.nested.value, 1);
+    assert.equal(hwState._xfNotes, null);
+    assert.deepEqual(events.map(event => event.name), ['highway:chart-transform-failed']);
+
+    const output = { notes: [{ t: 2, nested: { value: 3 } }] };
+    hwState._xfProvider = { id: 'stable-provider', transform: () => output };
+    helpers._restageChartTransform();
+    output.notes[0].t = 20;
+    output.notes[0].nested.value = 30;
+    assert.equal(hwState._xfNotes[0].t, 2);
+    assert.equal(hwState._xfNotes[0].nested.value, 3);
+});
+
+test('async and malformed provider outputs fail closed without a partial stage', async () => {
+    const src = fs.readFileSync(highwayJs, 'utf8');
+    const snippets = [
+        extractBlock(src, 'function _clearChartTransformStage()'),
+        extractBlock(src, 'function _cloneChartTransformValue(value, seen = new WeakMap())'),
+        extractBlock(src, 'function _sortedChartTransformArray(items, key)'),
+        extractBlock(src, 'function _reportChartTransformFailure(provider, error)'),
+        extractBlock(src, 'function _restageChartTransform()'),
+    ].join('\n');
+    const events = [];
+    const errors = [];
+    const hwState = {
+        _xfProvider: { id: 'async-provider', transform: async () => { throw new Error('async detail'); } },
+        _filteredNotes: null, _filteredChords: null, _filteredAnchors: null,
+        _filteredHandShapes: null, _phrasesHaveHandShapes: false,
+        notes: [], chords: [], anchors: [], handShapes: [], chordTemplates: [],
+        stringCount: 6, songInfo: {},
+    };
+    const helpers = new Function('hwState', 'window', 'console', `
+        ${snippets}
+        return { _restageChartTransform };
+    `)(hwState, { feedBack: { emit(name) { events.push(name); } } }, { error(...args) { errors.push(args); } });
+
+    helpers._restageChartTransform();
+    assert.equal(hwState._xfNotes, null);
+    assert.equal(events.length, 1);
+    assert.match(String(errors[0][1]), /must return synchronously/);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(String(errors[1][1]), /async detail/, 'async rejection stays in the local console');
+
+    const output = { chords: [{ t: 1 }] };
+    Object.defineProperty(output, 'notes', { enumerable: true, get() { throw new Error('bad getter'); } });
+    hwState._xfProvider = { id: 'getter-provider', transform: () => output };
+    helpers._restageChartTransform();
+    assert.equal(hwState._xfNotes, null);
+    assert.equal(hwState._xfChords, null);
+    assert.equal(events.length, 2);
+});
+
 test('createHighway announces each instance via highway:created', () => {
     const src = fs.readFileSync(highwayJs, 'utf8');
     assert.match(src, /emit\('highway:created', \{ highway: api \}\)/,
@@ -161,6 +260,11 @@ test('public getters fall through transformed → filtered → raw', () => {
     assert.match(src, /getFilteredChords\(\)\s*\{\s*if \(hwState\._xfChords !== null\) return hwState\._xfChords;/);
     assert.match(src, /getChordTemplates\(\)\s*\{\s*return hwState\._xfChordTemplates !== null/);
     assert.match(src, /getStringCount\(\)\s*\{\s*return hwState\._xfStringCount !== null/);
+    assert.match(src, /getTuning\(\)\s*\{\s*return hwState\._xfTuning !== null/);
+    assert.match(src, /getCapo\(\)\s*\{\s*return hwState\._xfCapo !== null/);
+    assert.match(src, /getCentOffset\(\)\s*\{\s*return hwState\._xfCentOffset !== null/);
+    assert.match(src, /getSongInfo\(\)\s*\{\s*return hwState\.songInfo;\s*\}/,
+        'getSongInfo keeps the original chart metadata contract');
 });
 
 test('anchor zoom helpers read the staged anchors first', () => {

@@ -501,7 +501,7 @@ window.feedBack.on('progression:quest-completed', (e) => {
 
 ## Chart-Transform Provider
 
-Plugins that remap chart data — retuning to another instrument, simplification, exercise generation — register as `chart-transform` providers (#952) instead of forking a renderer. The substituted chart reaches every consumer: built-in 2D highway, custom viz (bundle), overlays/scorers (getters), on the primary highway and announced splitscreen instances.
+Plugins that transpose, simplify, annotate, or otherwise rewrite chart data register as `chart-transform` providers (#952). The effective chart reaches the built-in highway, custom renderers, and highway getters on primary and splitscreen instances.
 
 ```json
 {
@@ -533,28 +533,22 @@ await api.dispatch({
     providerId: 'my_transform',
     label: 'My Transform',
     transform(input) {
-      // input: { notes, chords, anchors, allNotes, allChords,
-      //   chordTemplates, handShapes, stringCount, songInfo }
-      // notes/chords/anchors/handShapes are DIFFICULTY-FILTERED (the
-      // transform applies after the mastery filter). Return any subset of
-      // { notes, chords, anchors, allNotes, allChords, chordTemplates,
-      //   handShapes, stringCount, tuning, capo, centOffset } — or
-      // null/undefined to pass the chart through untouched.
-      if (!/\bguitar|bass|lead|rhythm|combo\b/i.test(input.songInfo?.arrangement || '')) return null;
-      return { notes: remap(input.notes) };
+      const notes = rewriteNotes(input.notes);
+      const allNotes = input.allNotes === input.notes ? notes : rewriteNotes(input.allNotes);
+      return { notes, allNotes };
     },
   },
 });
 
-// User toggles it on (selection persists and restores on re-registration):
 await api.dispatch({ capability: 'chart-transform', command: 'select-provider',
   source: 'my_transform', payload: { providerId: 'my_transform' } });
 
-// Settings changed mid-song? Re-run the installed transform live:
 await api.dispatch({ capability: 'chart-transform', command: 'refresh', source: 'my_transform' });
 ```
 
-The transform runs once per chart change (ready, mastery recompute, refresh) — never per frame. The host copies and time-sorts accepted timeline arrays before staging them. A throwing transform is skipped for that pass (the original chart renders) and surfaces as the `transform-failed` event with a fixed public reason; raw exception details remain local to the console. `getSongInfo()` keeps the chart's original tuning/capo by contract; export `tuning` as standard-relative offsets for your target string count so scoring consumers judge the target instrument via `bundle.tuning`/`bundle.capo`/`bundle.centOffset`.
+`transform(input)` receives filtered `notes`, `chords`, `anchors`, and `handShapes`, plus full-difficulty `allNotes`/`allChords`, `chordTemplates`, `stringCount`, and `songInfo`. It may synchronously return any subset of those arrays plus `tuning`, `capo`, or `centOffset`; null leaves the chart unchanged. The host isolates provider inputs and outputs, time-sorts accepted timelines, and falls back to the original chart on failure.
+
+Transforms run at chart ready, mastery recompute, and explicit `refresh`, never per frame. Selection persists by provider id. `getSongInfo()` retains original metadata; effective metadata is available through the renderer bundle and `getStringCount()`, `getTuning()`, `getCapo()`, and `getCentOffset()`.
 
 ## Future Expansion Domains
 

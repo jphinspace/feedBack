@@ -1,17 +1,6 @@
-// Core chart-transform capability domain.
-//
-// Provider-coordinator for pre-render/pre-scoring chart substitution: a
-// provider remaps the difficulty-filtered chart (notes / chords / anchors /
-// chord templates / string count / tuning) before renderers, overlays, and
-// scoring consumers read it. The hot path stays the synchronous
-// highway.setChartTransform hook on the renderer data plane — this module
-// owns registration, selection, persistence, failure attribution, and
-// redaction-safe diagnostics, never the per-frame path. The transform runs
-// AFTER difficulty/mastery filtering (see _restageChartTransform in
-// static/highway.js). The active provider installs on every highway
-// surface — the primary window.highway plus instances announced via
-// highway:created (splitscreen panels); per-panel INDEPENDENT selection is
-// a tracked follow-up, mirroring the visualization domain.
+// Chart-transform provider registration, selection, and diagnostics.
+// Transformation stays on the synchronous highway data plane and runs after
+// difficulty filtering; the selected provider is shared by highway instances.
 (function () {
     'use strict';
 
@@ -73,10 +62,6 @@
                 });
             } catch (_) { /* diagnostics must not break rendering */ }
         }
-    }
-
-    function _redactFailureReason() {
-        return PUBLIC_FAILURE_REASON;
     }
 
     function _persistSelection(providerId) {
@@ -156,6 +141,31 @@
         return ctx.payload && typeof ctx.payload === 'object' ? ctx.payload : {};
     }
 
+    function _providersForParticipant(participantId) {
+        return [...providers.values()].filter(provider => provider.pluginId === participantId);
+    }
+
+    function _registerProviderParticipant(participantId) {
+        const owned = _providersForParticipant(participantId);
+        if (!owned.length) return;
+        capabilities.registerParticipant(participantId, {
+            'chart-transform': {
+                roles: ['provider'],
+                operations: ['chart.transform'],
+                events: [],
+                mode: 'active',
+                compatibility: 'none',
+                safety: 'safe',
+                runtime: true,
+                description: `${owned.length} registered chart transform provider${owned.length === 1 ? '' : 's'}.`,
+                provider_policy: {
+                    providerIds: owned.map(provider => provider.id),
+                    providers: owned.map(provider => ({ id: provider.id, label: provider.label })),
+                },
+            },
+        });
+    }
+
     function _registerProvider(ctx = {}) {
         const payload = _payload(ctx);
         const providerId = String(payload.providerId || payload.id || '').trim();
@@ -177,19 +187,7 @@
             pluginId: participantId,
             transform: payload.transform,
         });
-        capabilities.registerParticipant(participantId, {
-            'chart-transform': {
-                roles: ['provider'],
-                operations: ['chart.transform'],
-                events: [],
-                mode: 'active',
-                compatibility: 'none',
-                safety: 'safe',
-                runtime: true,
-                description: `Chart transform ${payload.label || providerId}.`,
-                provider_policy: { providerId, label: String(payload.label || providerId) },
-            },
-        });
+        _registerProviderParticipant(participantId);
         _emit('provider-registered', { providerId });
         // Restore a persisted selection the moment its provider appears.
         if (!activeProviderId && _persistedSelection() === providerId) {
@@ -223,9 +221,10 @@
             _install();
             _emit('transform-changed', { from: providerId, to: null, source: 'provider-unregistered' });
         }
-        const stillHasProvider = Array.from(providers.values())
-            .some(p => p.pluginId === provider.pluginId);
-        if (!stillHasProvider && typeof capabilities.unregisterParticipant === 'function') {
+        const remainingProviders = _providersForParticipant(provider.pluginId);
+        if (remainingProviders.length) {
+            _registerProviderParticipant(provider.pluginId);
+        } else if (typeof capabilities.unregisterParticipant === 'function') {
             const live = typeof capabilities.inspect === 'function' ? capabilities.inspect('chart-transform') : null;
             const participant = ((live && live.participants) || []).find(p => p.pluginId === provider.pluginId);
             const roles = participant && Array.isArray(participant.roles) ? participant.roles : [];
@@ -303,7 +302,7 @@
                 const detail = (e && e.detail) || e || {};
                 lastFailure = {
                     providerId: String(detail.id || activeProviderId || 'unknown'),
-                    reason: _redactFailureReason(),
+                    reason: PUBLIC_FAILURE_REASON,
                 };
                 _emit('transform-failed', { ...lastFailure });
                 _contributeDiagnostics();
@@ -317,11 +316,8 @@
                     _contributeDiagnostics();
                 }
             });
-            // Additional highway instances (splitscreen panels) announce
-            // themselves; the active provider installs on each so every
-            // panel renders/scores the transformed chart (each instance
-            // restages against its OWN songInfo — per-panel arrangements
-            // resolve independently inside the provider).
+            // Additional instances restage the active provider against their
+            // own chart state.
             sm.on('highway:created', (e) => {
                 const detail = (e && e.detail) || e || {};
                 if (!_capable(detail.highway)) return;
