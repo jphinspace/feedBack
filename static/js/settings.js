@@ -213,9 +213,66 @@ export function setupWindowOptions() {
     }
 }
 
-export const APP_UPDATE_CHANNELS = ['stable', 'rc', 'beta', 'alpha'];
+export const APP_UPDATE_CHANNELS = ['stable', 'rc', 'beta', 'alpha', 'nightly'];
 
 export let _appUpdatesWired = false;
+// Poll handle for the active-download watcher (module-scoped so re-running
+// setupAppUpdates on a panel re-render never stacks a second poll).
+let _appUpdatePollTimer = null;
+// Last channel main actually acknowledged (initial sync or a successful
+// user switch). Used to revert the dropdown/localStorage if a switch fails,
+// so the UI/persisted state can never end up ahead of the real updater state.
+let _appUpdateAckedChannel = null;
+// Last [update-diag] renderFrom line logged, so the ~1.5s download poll (and
+// repeated no-op re-renders) don't flood the diagnostics ring buffer with
+// byte-identical lines and evict genuinely useful trace. Every real state or
+// percent change still differs and logs; the structured contribute() snapshot
+// (with its own ts) is unconditional, so liveness is never lost.
+let _appUpdateLastRenderLog = null;
+
+// Pure status → view model for the App-updates panel. DOM-free and exported so
+// the button/channel/text state machine can be unit-tested without a browser;
+// renderFrom() applies the returned shape to the DOM. `canApply` is whether the
+// bridge exposes apply() (older bridges fall back to text-only), `fmtTimestamp`
+// formats the "last checked" time, `channelValue` is the dropdown's fallback
+// when the status omits a channel.
+export function _appUpdateStatusView(s, { channelValue, canApply = true, fmtTimestamp = (t) => String(t) } = {}) {
+    if (!s) return { kind: 'unavailable' };
+    if (s.status === 'unsupported' || s.platform === 'linux') return { kind: 'unsupported' };
+    const base = `Version ${s.currentVersion || '?'} · ${s.channel || channelValue}`;
+    let action;
+    let btnLabel = 'Check for updates';
+    let btnMode = 'check';
+    let btnDisabled = false;
+    // Lock the channel selector only while a check/download is in flight —
+    // switching mid-operation abandons it. Enabled for every other status.
+    const channelDisabled = s.status === 'checking' || s.status === 'downloading';
+    switch (s.status) {
+        case 'checking':
+            action = 'checking for updates…';
+            btnDisabled = true;
+            break;
+        case 'downloading': {
+            const pct = typeof s.percent === 'number' ? s.percent : null;
+            action = pct === null ? 'update available — downloading…' : `downloading update… ${pct}%`;
+            btnDisabled = true;
+            break;
+        }
+        case 'downloaded':
+            action = 'update ready';
+            if (canApply) { btnLabel = 'Restart now'; btnMode = 'restart'; }
+            else { action = 'update ready — restart to apply'; }
+            break;
+        case 'error':
+            action = s.message ? `update error: ${s.message}` : 'update check failed';
+            break;
+        case 'idle':
+        default:
+            action = `up to date · last checked ${fmtTimestamp(s.lastChecked)}`;
+            break;
+    }
+    return { kind: 'status', line: `${base} · ${action}`, btnLabel, btnMode, btnDisabled, channelDisabled };
+}
 
 export function setupAppUpdates() {
     const block = document.getElementById('app-updates-block');
@@ -248,13 +305,29 @@ export function setupAppUpdates() {
     try { storedRaw = localStorage.getItem('feedBack-update-channel') || localStorage.getItem('slopsmith-update-channel'); } catch (_) { /* fall through */ }
     const stored = APP_UPDATE_CHANNELS.includes(storedRaw) ? storedRaw : 'stable';
     channelSelect.value = stored;
+    _appUpdateAckedChannel = stored;
 
-    const isLinux = window.feedBackDesktop?.platform === 'linux';
+    // Diagnostic: every entry into this function, with whether the one-time
+    // sync gate has already fired. _appUpdatesWired is a MODULE-level `let`,
+    // so it only resets to false on a genuine fresh evaluation of this
+    // script (a real page reload/navigation) — not on loadSettings() simply
+    // being called again within the same page. A second "wired=false" in one
+    // exported log is direct proof of a reload; a series of "wired=true"
+    // entries proves it's just repeated Settings-panel visits (harmless).
+    console.log('[update-diag] setupAppUpdates() entered', JSON.stringify({ wired: _appUpdatesWired, stored }));
 
     function showLinuxFallback(message) {
+        // Deliberately leaves channelSelect ENABLED: on Linux "unsupported"
+        // usually just means "the channel isn't Nightly yet", and the dropdown
+        // is the only way to switch to Nightly. Disabling it would trap the
+        // user on whatever channel they booted with. Only the check button and
+        // the note reflect the unsupported state.
         if (linuxNote) linuxNote.classList.remove('hidden');
-        channelSelect.disabled = true;
         checkBtn.disabled = true;
+        // Reset the button out of any leftover "Restart now" state (e.g. an
+        // update was staged on nightly, then the user switched channels).
+        checkBtn.textContent = 'Check for updates';
+        checkBtn.dataset.mode = 'check';
         statusEl.textContent = message || 'Auto-update is not available on this platform.';
     }
 
@@ -266,61 +339,140 @@ export function setupAppUpdates() {
         } catch (_) { return 'never'; }
     }
 
+    // Render one status object. Always keeps the current version + channel
+    // visible and appends what's happening, so the download progress never
+    // obscures which build you're on.
+    function renderFrom(s, extra) {
+        // Diagnostic trace: log the raw status object before any branching —
+        // auto-captured by diagnostics.js's console wrap into the exportable
+        // ring buffer, so "Export Diagnostics" in this same Settings → System
+        // panel captures exactly what the app saw and decided, not just what
+        // the UI showed. Deduped so a steady poll doesn't flood the ring buffer
+        // (see _appUpdateLastRenderLog); a real state/percent change differs and
+        // still logs; the structured contribute() snapshot below is unconditional.
+        const logKey = `${JSON.stringify(s)}|${extra || ''}`;
+        if (logKey !== _appUpdateLastRenderLog) {
+            _appUpdateLastRenderLog = logKey;
+            console.log('[update-diag] renderFrom', JSON.stringify(s), extra ? `extra=${extra}` : '');
+        }
+        const view = _appUpdateStatusView(s, {
+            channelValue: channelSelect.value,
+            canApply: typeof updateApi.apply === 'function',
+            fmtTimestamp,
+        });
+        if (view.kind === 'unavailable') { statusEl.textContent = extra || 'Updater status unavailable.'; return; }
+        if (view.kind === 'unsupported') {
+            showLinuxFallback('Auto-update requires the AppImage build on the Nightly channel.');
+            return;
+        }
+        // Healthy for the current channel — clear any "unsupported" UI left
+        // over from a prior channel selection.
+        if (linuxNote) linuxNote.classList.add('hidden');
+        // The button is a little state machine (dataset.mode drives the click
+        // handler's restart-vs-check branch); the channel selector locks only
+        // while a check/download is active. See _appUpdateStatusView.
+        channelSelect.disabled = view.channelDisabled;
+        checkBtn.textContent = view.btnLabel;
+        checkBtn.dataset.mode = view.btnMode;
+        checkBtn.disabled = view.btnDisabled;
+        const line = view.line;
+        statusEl.textContent = extra ? `${extra} · ${line}` : line;
+
+        // Live structured snapshot (overwrites, not a log) via the existing
+        // diagnostics contribute() API — 'audio_engine' is feedBack-desktop's
+        // own registered plugin id, so the server's diagnostics export won't
+        // filter it out. Always current, no scrolling through console history
+        // needed to answer "what does the app think is going on right now."
+        try {
+            window.feedBack?.diagnostics?.contribute('audio_engine', {
+                update: {
+                    channel: s.channel || channelSelect.value,
+                    status: s.status,
+                    currentVersion: s.currentVersion ?? null,
+                    lastChecked: s.lastChecked ?? null,
+                    percent: typeof s.percent === 'number' ? s.percent : null,
+                    message: s.message ?? null,
+                    rendered: line,
+                    ts: Date.now(),
+                },
+            });
+        } catch (_) { /* diagnostics.js not loaded — never let this break rendering */ }
+
+        // A download runs in the background (the check returns immediately), so
+        // poll for the terminal state rather than relying solely on a one-shot
+        // "downloaded" event that could be missed or arrive out of order.
+        if (s.status === 'downloading' || s.status === 'checking') pollWhileBusy();
+    }
+
     function renderStatus(extra) {
         try {
             // Wrap in Promise.resolve so a future getStatus() that returns
             // synchronously won't blow up on .then().
-            void Promise.resolve(updateApi.getStatus()).then((s) => {
-                if (!s) { statusEl.textContent = extra || 'Updater status unavailable.'; return; }
-                if (s.status === 'unsupported' || s.platform === 'linux') {
-                    showLinuxFallback('Auto-update is not available on Linux.');
-                    return;
-                }
-                if (s.status === 'error') {
-                    const errMsg = s.message ? `Update error: ${s.message}` : 'Update check failed.';
-                    statusEl.textContent = extra ? `${extra} · ${errMsg}` : errMsg;
-                    return;
-                }
-                const parts = [
-                    `Version ${s.currentVersion || '?'}`,
-                    `channel ${s.channel || channelSelect.value}`,
-                    `last checked ${fmtTimestamp(s.lastChecked)}`,
-                ];
-                statusEl.textContent = extra ? `${extra} · ${parts.join(' · ')}` : parts.join(' · ');
-            }).catch((e) => {
-                console.warn('[updater] getStatus failed:', e);
-                statusEl.textContent = extra || 'Failed to read updater status.';
-            });
+            void Promise.resolve(updateApi.getStatus())
+                .then((s) => renderFrom(s, extra))
+                .catch((e) => {
+                    console.warn('[updater] getStatus failed:', e);
+                    statusEl.textContent = extra || 'Failed to read updater status.';
+                });
         } catch (e) {
             console.warn('[updater] getStatus threw:', e);
             statusEl.textContent = extra || 'Failed to read updater status.';
         }
     }
 
-    if (isLinux) {
-        showLinuxFallback('Auto-update is not available on Linux.');
-        // Keep main informed of the persisted channel even on Linux so
-        // cross-platform reasoning about the channel stays consistent.
-        // setChannel() may return a Promise — chain .catch() so a rejected
-        // promise doesn't surface as an unhandled rejection.
-        try {
-            void Promise.resolve(updateApi.setChannel(stored)).catch((e) => {
-                console.warn('[updater] setChannel(linux) failed:', e);
+    // While a download (or check) is active, re-read the authoritative status
+    // every ~1.5s and stop once it settles (downloaded / idle / error). This is
+    // what guarantees the panel leaves "downloading… 100%" and lands on "update
+    // ready" (or surfaces a swap error) even if the completion event is lost.
+    function pollWhileBusy() {
+        if (_appUpdatePollTimer) return;
+        _appUpdatePollTimer = setInterval(() => {
+            void Promise.resolve(updateApi.getStatus()).then((s) => {
+                renderFrom(s);
+                const st = s && s.status;
+                if (st !== 'downloading' && st !== 'checking') {
+                    clearInterval(_appUpdatePollTimer);
+                    _appUpdatePollTimer = null;
+                }
+            }).catch(() => {
+                clearInterval(_appUpdatePollTimer);
+                _appUpdatePollTimer = null;
             });
-        } catch (e) {
-            console.warn('[updater] setChannel(linux) threw:', e);
-        }
-        return;
+        }, 1500);
     }
 
-    // Inform main of the persisted channel on each load. setChannel() on
-    // main is idempotent when the channel already matches.
-    try {
-        void Promise.resolve(updateApi.setChannel(stored)).catch((e) => {
-            console.warn('[updater] setChannel(initial) failed:', e);
-        });
-    } catch (e) {
-        console.warn('[updater] setChannel(initial) threw:', e);
+    // Inform main of the persisted channel — but ONLY the first time this page
+    // wires up, not on every loadSettings() re-render. This used to run
+    // unconditionally on every call and was caught (via Export Diagnostics)
+    // stomping an in-flight check/download: a redundant setChannel() call
+    // mid-download bumps main's checkGeneration and resets progress state,
+    // so the download silently loses its ability to report completion even
+    // though the file swap itself still happens in the background. Once
+    // wired, the channel select's own 'change' handler is the only thing
+    // that needs to tell main about a channel switch.
+    if (!_appUpdatesWired) {
+        try {
+            // Render from THIS call's own result (same reasoning as the check
+            // button and the 'change' handler below), not just catch its
+            // errors. The unconditional renderStatus() at the bottom of this
+            // function fires a SEPARATE getStatus() round-trip immediately
+            // after — if that resolves before main has processed this
+            // setChannel() (e.g. main is still on its 'stable' boot default),
+            // the UI would render 'unsupported' and — since this call's own
+            // eventual success was never rendered — get stuck there
+            // permanently, even once main correctly switches channel a moment
+            // later. Rendering here too means whichever of the two calls
+            // resolves LAST wins and shows the true state, regardless of
+            // which order they land in.
+            void Promise.resolve(updateApi.setChannel(stored)).then((result) => {
+                _appUpdateAckedChannel = stored;
+                renderFrom(result);
+            }).catch((e) => {
+                console.warn('[updater] setChannel(initial) failed:', e);
+            });
+        } catch (e) {
+            console.warn('[updater] setChannel(initial) threw:', e);
+        }
     }
 
     if (!_appUpdatesWired) {
@@ -330,55 +482,81 @@ export function setupAppUpdates() {
         channelSelect.addEventListener('change', async () => {
             const val = channelSelect.value;
             if (!APP_UPDATE_CHANNELS.includes(val)) return;
-            try { localStorage.setItem('feedBack-update-channel', val); localStorage.removeItem('slopsmith-update-channel'); } catch (_) {}
+            console.log('[update-diag] user switched channel to', val);
             try {
-                // Await setChannel so the status line reflects what actually
-                // happened — rendering "Channel set" unconditionally would
-                // mislead users when the IPC rejects.
-                await Promise.resolve(updateApi.setChannel(val));
-                renderStatus(`Channel set to ${val}.`);
+                // Render from setChannel()'s own return value (same reasoning
+                // as the check button: it's computed synchronously at the
+                // moment of the switch, so it can't be stale, unlike a
+                // follow-up getStatus() call).
+                const result = await Promise.resolve(updateApi.setChannel(val));
+                // Only persist once main has actually acknowledged the switch —
+                // a failed setChannel() must never leave localStorage (or the
+                // dropdown) ahead of what main is really using.
+                _appUpdateAckedChannel = val;
+                try { localStorage.setItem('feedBack-update-channel', val); localStorage.removeItem('slopsmith-update-channel'); } catch (_) {}
+                renderFrom(result, `Channel set to ${val}.`);
             } catch (e) {
                 console.warn('[updater] setChannel failed:', e);
+                channelSelect.value = _appUpdateAckedChannel ?? 'stable';
                 renderStatus(`Failed to set channel to ${val}: ${e?.message || e}`);
             }
         });
 
         checkBtn.addEventListener('click', async () => {
+            // In restart mode (set by renderFrom once an update is staged) the
+            // button applies the update instead of checking again.
+            if (checkBtn.dataset.mode === 'restart') {
+                console.log('[update-diag] user clicked Restart now');
+                checkBtn.disabled = true;
+                checkBtn.textContent = 'Restarting…';
+                try {
+                    const r = await updateApi.apply();
+                    if (r?.status === 'error') {
+                        console.warn('[updater] apply returned error:', r.message || 'unknown');
+                        renderFrom(r, 'Restart failed.');
+                    }
+                    // On success the app quits + relaunches — nothing to render.
+                } catch (e) {
+                    console.warn('[updater] apply failed:', e);
+                    statusEl.textContent = `Restart failed: ${e?.message || e}`;
+                    checkBtn.textContent = 'Restart now';
+                    checkBtn.disabled = false;
+                }
+                return;
+            }
+            console.log('[update-diag] user clicked Check for updates');
             checkBtn.disabled = true;
             statusEl.textContent = 'Checking for updates…';
-            let reEnableBtn = true;
+            let result;
             try {
-                const result = await updateApi.checkNow();
-                const status = result?.status || 'unknown';
-                let msg;
-                switch (status) {
-                    case 'idle':
-                        msg = "You're on the newest version in this channel.";
-                        break;
-                    case 'downloading':
-                        msg = 'Update available — downloading…';
-                        break;
-                    case 'downloaded':
-                        msg = 'Update downloaded — restart to apply.';
-                        break;
-                    case 'unsupported':
-                        reEnableBtn = false;
-                        showLinuxFallback('Auto-update is not available on Linux.');
-                        return;
-                    case 'error':
-                        msg = `Update check failed${result?.message ? `: ${result.message}` : '.'}`;
-                        break;
-                    default:
-                        msg = `Update check returned: ${status}`;
-                }
-                renderStatus(msg);
+                // The Linux check returns immediately (any download runs in the
+                // background).
+                result = await updateApi.checkNow();
             } catch (e) {
                 console.warn('[updater] checkNow failed:', e);
                 statusEl.textContent = `Update check failed: ${e?.message || e}`;
-            } finally {
-                if (reEnableBtn) checkBtn.disabled = false;
+                checkBtn.disabled = false;
+                return;
             }
+            // Render straight from checkNow()'s own return value rather than a
+            // follow-up getStatus() call. checkNow() computes that value
+            // synchronously at the moment it decides the outcome, so it can't
+            // be stale; a separate getStatus() round-trip right after it can
+            // race with anything that resets state in between (a concurrent
+            // channel switch, another in-flight check settling) and show a
+            // blanked "up to date · last checked never" even though this check
+            // just succeeded.
+            renderFrom(result);
         });
+
+        // Main-process events (checkNow/download decisions in update-manager.ts)
+        // are invisible to this page's console — forward them into it so a
+        // single "Export Diagnostics" click captures both sides of the story.
+        if (typeof updateApi.onDiag === 'function') {
+            updateApi.onDiag((payload) => {
+                console.log('[update-diag:main]', payload?.message, payload?.data ? JSON.stringify(payload.data) : '');
+            });
+        }
 
         _appUpdatesWired = true;
     }
