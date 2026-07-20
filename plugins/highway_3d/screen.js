@@ -2786,6 +2786,21 @@
         if (globalVal !== null && globalVal !== undefined) return _bgCoerce(key, globalVal);
         return BG_DEFAULTS[key];
     }
+    // Read a setting's GLOBAL value, ignoring any per-panel override. The
+    // player-chrome control is a single shared instance, so it must always
+    // read (and write) the global slot. Passing null as a panelKey to
+    // _bgReadSetting happened to work only because 'h3d_bg_null_<key>' never
+    // exists; this states the intent directly and can't be shadowed if a
+    // panelKey of null is ever used deliberately. Mirrors the global half of
+    // _bgReadSetting exactly (mem-fallback precedence, then persisted, then
+    // default).
+    function _bgReadGlobal(key) {
+        let globalVal = null;
+        try { globalVal = localStorage.getItem('h3d_bg_' + key); } catch (_) { /* storage blocked */ }
+        if (key in _bgMemFallback) return _bgCoerce(key, _bgMemFallback[key]);
+        if (globalVal !== null && globalVal !== undefined) return _bgCoerce(key, globalVal);
+        return BG_DEFAULTS[key];
+    }
     // Shared "stored string -> bool" coercion for every boolean
     // setting. Mirrors settings.html's coerceBool so the renderer and
     // the UI hydration always agree on what a corrupted/unknown value
@@ -4024,8 +4039,10 @@
      * add a style there and it shows up in both places automatically.
      *
      * MOUNTED ONCE, REFCOUNTED. Under splitscreen there are N renderer
-     * instances but these settings are global, so N copies of the control
-     * would be N ways to set one value. init() acquires, destroy() releases,
+     * instances but these settings are global — a panel may set a per-panel
+     * override, but this single shared control only ever reads/writes the
+     * global slot (via _bgReadGlobal), so N copies would be N ways to set
+     * one value. init() acquires, destroy() releases,
      * and the last release unmounts — so the control disappears when the user
      * switches to a non-3D renderer instead of lingering as a dead knob.
      *
@@ -4046,9 +4063,11 @@
     //
     // Derived by reading the BG_STYLES bodies: a style uses `intensity` if its
     // build() reads settings.intensity, and uses `reactive` if its update()
-    // dereferences the `bands` argument. 'butterchurn' is not a BG_STYLES entry
-    // at all - _bgMountStyle falls through to BG_STYLES.off - and it drives its
-    // own audio tap and opacity, so both are false for it.
+    // dereferences the `bands` argument. 'butterchurn' is a mode, not a
+    // BG_STYLES fog-scenery entry: _bcSyncMode owns its controller, which
+    // drives its own audio tap and canvas opacity (only the fog-scenery half
+    // falls through to BG_STYLES.off). So neither knob here reaches it - both
+    // are false, and the tooltip points at Butterchurn's own controls.
     //
     // KEEP IN STEP WITH BG_STYLES. If a style starts reading bands or intensity
     // and its row is not updated, the control stays greyed out and lies the
@@ -4063,6 +4082,10 @@
         image:       { intensity: true,  reactive: false, why: 'This background does not react to audio' },
         video:       { intensity: false, reactive: false, why: 'The video plays as-is - nothing to adjust here' },
         butterchurn: { intensity: false, reactive: false, why: 'Butterchurn reacts to audio itself - tune it in Settings > 3D Highway, or its Visualizer panel' },
+        // Not in BG_STYLE_IDS, so it never appears in the dropdown - reached
+        // only via the viz-picker Venue flow (h3dVenueSceneSetActive). While
+        // active it is the EFFECTIVE style, so both knobs drive nothing.
+        venue:       { intensity: false, reactive: false, why: 'Venue visualization is active - pick a background from the visualization picker' },
     };
     let _pcRefs = 0, _pcEl = null, _pcSel = null, _pcReactive = null, _pcIntensity = null;
     // Non-disabled wrappers around the two greyable controls. A native-disabled
@@ -4070,7 +4093,7 @@
     // shows on hover — the whole "greyed out, says why on hover" affordance
     // would be dead. The reason lives on these wrappers instead, and the
     // disabled control gets pointer-events:none so the hover reaches them.
-    let _pcReactiveWrap = null, _pcIntensityWrap = null;
+    let _pcReactiveWrap = null, _pcIntensityWrap = null, _pcReason = null;
     let _pcListener = null, _pcRetry = 0, _pcRetryTimer = 0;
 
     // The player chrome exposes this slot once it has initialised. A host
@@ -4078,7 +4101,12 @@
     // page remains the way in.
     function _pcSlot() {
         try {
-            const fn = window.feedBack && window.feedBack.ui && window.feedBack.ui.playerControlSlot;
+            // Gate on the v3 shell per docs/plugin-v3-ui.md (matches the tuner
+            // precedent). The playerControlSlot typeof check below already
+            // covers the practical case - only v3 exposes it - but the
+            // documented checklist asks plugins to detect v3 explicitly.
+            if (!window.feedBack || window.feedBack.uiVersion !== 'v3') return null;
+            const fn = window.feedBack.ui && window.feedBack.ui.playerControlSlot;
             return typeof fn === 'function' ? fn() : null;
         } catch (_) { return null; }
     }
@@ -4126,6 +4154,8 @@
         btn._on = !!on && !disabled;
         btn.disabled = !!disabled;
         btn.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        // A toggle button must expose its state, not just its label.
+        btn.setAttribute('aria-pressed', btn._on ? 'true' : 'false');
         // pointer-events:none lets the hover fall through to _pcReactiveWrap,
         // which carries the reason a disabled button's own title can't show.
         btn.style.pointerEvents = disabled ? 'none' : '';
@@ -4151,22 +4181,51 @@
     // whenever the settings bus reports one of our keys changed, so editing
     // from the Settings page updates this control and vice-versa.
     function _pcSync() {
+        // The active style is the EFFECTIVE one, not the stored one: while the
+        // Venue scene override is on it is what's mounted, and it ignores the
+        // whole Background group - picking a style writes `style` but
+        // _bgMountStyle resolves back to venue, so the dropdown would look
+        // broken. So under Venue the ENTIRE group goes inert (dropdown too),
+        // and the user exits Venue from the visualization picker where they
+        // entered it. An unknown id enables everything rather than disabling
+        // it, so a style added without a _PC_USES row is merely unhelpful.
+        const venue = !!_venueSceneOverride;
+        const effectiveStyle = venue ? 'venue' : _bgReadGlobal('style');
+        const uses = _PC_USES[effectiveStyle] || { intensity: true, reactive: true };
+        const why = uses.why || 'This background style ignores this setting';
+        if (_pcReason) _pcReason.textContent = why;
+        // Point a screen reader at the reason, but only while a control is
+        // inert - cleared otherwise so an enabled control is not described by a
+        // stale reason.
+        const _pcDescribe = (el, inert) => {
+            if (!el) return;
+            if (inert) el.setAttribute('aria-describedby', 'h3d-pc-reason');
+            else el.removeAttribute('aria-describedby');
+        };
+        _pcDescribe(_pcSel, venue);
+        _pcDescribe(_pcReactive, !uses.reactive);
+        _pcDescribe(_pcIntensity, !uses.intensity);
         if (_pcSel) {
             // The custom slots stay unselectable until something is uploaded -
             // same rule settings.html applies.
             const img = _pcSel.querySelector('option[value="image"]');
             const vid = _pcSel.querySelector('option[value="video"]');
-            if (img) img.disabled = !_bgReadSetting(null, 'customImageDataUrl');
-            if (vid) vid.disabled = !_bgReadSetting(null, 'customVideoName');
-            _pcSel.value = _bgReadSetting(null, 'style');
+            if (img) img.disabled = !_bgReadGlobal('customImageDataUrl');
+            if (vid) vid.disabled = !_bgReadGlobal('customVideoName');
+            _pcSel.value = _bgReadGlobal('style');
+            // The dropdown still SHOWS the stored style (venue has no option),
+            // but it's inert while Venue owns the scene.
+            _pcSel.disabled = venue;
+            _pcSel.setAttribute('aria-disabled', venue ? 'true' : 'false');
+            _pcSel.style.opacity = venue ? '.45' : '1';
+            _pcSel.style.cursor = venue ? 'not-allowed' : '';
+            // Restore the base tooltip when Venue exits — blanking it would
+            // permanently drop the mount-time 'Background style' hint. Matches
+            // how the intensity slider and Reactive pill restore theirs.
+            _pcSel.title = venue ? why : 'Background style';
         }
-        // Grey out whichever controls the ACTIVE style ignores (see _PC_USES).
-        // An unknown id enables both rather than disabling both, so a style
-        // added without a table row is merely unhelpful, never inert.
-        const uses = _PC_USES[_bgReadSetting(null, 'style')] || { intensity: true, reactive: true };
-        const why = uses.why || 'This background style ignores this setting';
         if (_pcReactive) {
-            _pcPaint(_pcReactive, !!_bgReadSetting(null, 'reactive'), !uses.reactive,
+            _pcPaint(_pcReactive, !!_bgReadGlobal('reactive'), !uses.reactive,
                 uses.reactive ? 'React to the audio' : why);
         }
         // The reason shows via the wrapper (see _pcReactiveWrap); empty when
@@ -4176,7 +4235,7 @@
             _pcReactiveWrap.style.cursor = uses.reactive ? '' : 'not-allowed';
         }
         if (_pcIntensity) {
-            _pcIntensity.value = String(_bgReadSetting(null, 'intensity'));
+            _pcIntensity.value = String(_bgReadGlobal('intensity'));
             _pcIntensity.disabled = !uses.intensity;
             _pcIntensity.setAttribute('aria-disabled', uses.intensity ? 'false' : 'true');
             _pcIntensity.style.pointerEvents = uses.intensity ? '' : 'none';
@@ -4203,10 +4262,10 @@
     function _pcSyncSettingsPanel() {
         try {
             const st = document.getElementById('h3d-bg-style');
-            if (st) st.value = _bgReadSetting(null, 'style');
+            if (st) st.value = _bgReadGlobal('style');
             const re = document.getElementById('h3d-bg-reactive');
-            if (re) re.checked = !!_bgReadSetting(null, 'reactive');
-            const inten = _bgReadSetting(null, 'intensity');
+            if (re) re.checked = !!_bgReadGlobal('reactive');
+            const inten = _bgReadGlobal('intensity');
             const ie = document.getElementById('h3d-bg-intensity');
             if (ie) ie.value = String(inten);
             // The panel prints the numeric value beside the slider; keep its
@@ -4226,6 +4285,16 @@
         const box = document.createElement('div');
         box.className = 'h3d-pc';
         box.style.cssText = 'display:flex;flex-direction:column;width:100%;';
+        // Visually-hidden text carrying the "why greyed out" reason to screen
+        // readers; disabled controls point aria-describedby here. A title alone
+        // is announced unreliably and never on touch. One span suffices - every
+        // greyed control shares the same reason (derived from the single
+        // effective style).
+        _pcReason = document.createElement('span');
+        _pcReason.id = 'h3d-pc-reason';
+        _pcReason.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;'
+            + 'margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;';
+        box.appendChild(_pcReason);
 
         box.appendChild(_pcGroupLabel('Background'));
         // A dropdown, not pills: the style list is 8 entries and growing, and
@@ -4234,6 +4303,7 @@
         // raw <select>.
         _pcSel = document.createElement('select');
         _pcSel.title = 'Background style';
+        _pcSel.setAttribute('aria-label', 'Background style');
         _pcSel.style.cssText = 'width:100%;padding:.375rem .5rem;border:0;border-radius:.5rem;'
             + 'font-size:.75rem;line-height:1rem;cursor:pointer;'
             + 'background-color:' + _PC_C.idle + ';color:' + _PC_C.text + ';';
@@ -4244,6 +4314,7 @@
             _pcSel.appendChild(o);
         }
         _pcSel.addEventListener('change', () => {
+            if (_pcSel.disabled) return;   // inert under the Venue override
             try { window.h3dBgSetStyle(_pcSel.value); }
             catch (e) { console.error('[3D-Hwy] bg style set failed', e); }
         });
@@ -4269,6 +4340,7 @@
         _pcIntensity.type = 'range';
         _pcIntensity.min = '0'; _pcIntensity.max = '1'; _pcIntensity.step = '0.05';
         _pcIntensity.title = 'Background intensity';
+        _pcIntensity.setAttribute('aria-label', 'Background intensity');
         _pcIntensity.style.cssText = 'width:100%;accent-color:#4080e0;';
         // 'change' (fires on release), NOT 'input'. Every write goes through
         // _bgWriteGlobal -> _bgEmitChange -> _bgRebuild(), which tears the
@@ -4288,7 +4360,11 @@
         _pcSync();
         _pcListener = (key) => {
             if (key === 'style' || key === 'reactive' || key === 'intensity'
-                || key === 'customImageDataUrl' || key === 'customVideoName') {
+                || key === 'customImageDataUrl' || key === 'customVideoName'
+                || key === 'venueScene') {
+                // 'venueScene' has no dropdown/settings widget of its own, but
+                // toggling Venue changes the EFFECTIVE style, so the greying
+                // must re-evaluate (see _pcSync's effectiveStyle).
                 _pcSync();
                 _pcSyncSettingsPanel();
             }
@@ -4300,12 +4376,18 @@
         if (_pcListener) { _bgUnsubscribe(_pcListener); _pcListener = null; }
         if (_pcEl && _pcEl.parentNode) _pcEl.parentNode.removeChild(_pcEl);
         _pcEl = null; _pcSel = null; _pcReactive = null; _pcIntensity = null;
-        _pcReactiveWrap = null; _pcIntensityWrap = null;
+        _pcReactiveWrap = null; _pcIntensityWrap = null; _pcReason = null;
     }
     function _pcAcquire() {
         _pcRefs++;
         _pcBindScreenHook();
         if (_pcMount()) return;
+        // A non-v3 shell has no slot and never will — _pcAcquire only runs once
+        // the renderer is viable inside the v3 player chrome, and player-chrome.js
+        // sets uiVersion synchronously as it builds that chrome, so a missing 'v3'
+        // here means v2, not a not-yet-ready v3. Skip the retry loop rather than
+        // spinning it out to the ~3s budget for a slot that will never appear.
+        if (!window.feedBack || window.feedBack.uiVersion !== 'v3') return;
         // The rail popover may not be built yet on a cold load. Retry a few
         // times, then give up quietly — Settings still works.
         if (_pcRetryTimer) return;
@@ -4313,6 +4395,12 @@
         const tick = () => {
             _pcRetryTimer = 0;
             if (_pcRefs <= 0) return;          // renderer went away mid-retry
+            // Re-attempt the bus subscription too, not just the mount. On a cold
+            // load the renderer can init before window.feedBack.on exists; the
+            // first _pcBindScreenHook() then no-ops and, without this, the hook
+            // never binds and the control goes permanently deaf to screen
+            // changes. Idempotent via the _pcScreenHook guard.
+            _pcBindScreenHook();
             if (_pcMount()) return;
             if (++_pcRetry > 12) return;       // ~3s at 250ms
             _pcRetryTimer = setTimeout(tick, 250);
